@@ -59,3 +59,59 @@ fn removing_checked_unchecks_a_checkbox() {
 fn removing_checked_unchecks_a_radio() {
     removing_checked_unchecks("radio");
 }
+
+#[test]
+fn checked_is_a_boolean_attribute() {
+    let mut doc = make_doc("<html><body><input id=t type=checkbox></body></html>");
+    let node = node_id(&doc, "#t");
+    assert_eq!(is_checked(&doc, node), (Some(false), false));
+
+    for value in ["", "false", "checked"] {
+        doc.mutate().set_attribute(node, checked(), value);
+        assert_eq!(is_checked(&doc, node), (Some(true), true), "checked={value:?}");
+        let attrs = doc.get_node(node).unwrap().element_data().unwrap().attrs();
+        assert_eq!(
+            attrs.iter().filter(|a| a.name.local == local_name!("checked")).count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn removing_absent_checked_unchecks_a_changed_checkbox() {
+    let mut doc = make_doc("<html><body><input id=t type=checkbox></body></html>");
+    let node = node_id(&doc, "#t");
+    // The user checks the box: the state changes, the attribute does not.
+    doc.get_node_mut(node)
+        .unwrap()
+        .element_data_mut()
+        .unwrap()
+        .set_checkbox_input_checked(true);
+    assert_eq!(is_checked(&doc, node), (Some(true), true));
+
+    doc.mutate().clear_attribute(node, checked());
+    assert_eq!(is_checked(&doc, node), (Some(false), false));
+}
+
+#[test]
+fn removing_absent_value_empties_a_changed_textarea() {
+    let mut doc = make_doc("<html><body><textarea id=t></textarea></body></html>");
+    let node = node_id(&doc, "#t");
+    let text = |doc: &HtmlDocument| {
+        let element = doc.get_node(node).unwrap().element_data().unwrap();
+        element.text_input_data().unwrap().editor.raw_text().to_string()
+    };
+    doc.mutate()
+        .set_attribute(node, QualName::new(None, ns!(), local_name!("value")), "typed");
+    doc.get_node_mut(node)
+        .unwrap()
+        .element_data_mut()
+        .unwrap()
+        .attrs
+        .remove(&QualName::new(None, ns!(), local_name!("value")));
+    assert_eq!(text(&doc), "typed");
+
+    doc.mutate()
+        .clear_attribute(node, QualName::new(None, ns!(), local_name!("value")));
+    assert_eq!(text(&doc), "");
+}

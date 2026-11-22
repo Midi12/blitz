@@ -592,13 +592,12 @@ fn set_checked(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let checked = args.first().map(JsValue::to_boolean).unwrap_or(false);
-    // blitz-dom's checked handling parses the value as a boolean
-    write_attr(
-        &ctx,
-        node_id,
-        "checked",
-        if checked { "true" } else { "false" },
-    );
+    // blitz-dom sets and clears the checkedness with the `checked` attribute
+    if checked {
+        write_attr(&ctx, node_id, "checked", "");
+    } else {
+        clear_attr(&ctx, node_id, "checked");
+    }
     Ok(JsValue::undefined())
 }
 

@@ -383,7 +383,7 @@ impl DocumentMutator<'_> {
         }
 
         if (tag, attr) == tag_and_attr!("input", "checked") {
-            set_input_checked_state(element, value.to_string());
+            set_input_checked_state(element, true);
         } else if (tag, attr) == tag_and_attr!("img", "src") {
             self.load_image(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
@@ -434,6 +434,24 @@ impl DocumentMutator<'_> {
 
         let removed_attr = element.attrs.remove(&name);
         let had_attr = removed_attr.is_some();
+
+        // `value` and `checked` set the current value and checkedness of a form
+        // control, which the user may have changed since the attribute was last
+        // set or removed. Removing either resets that state, present or not.
+        if name.local == local_name!("value") {
+            if let Some(input_data) = element.text_input_data_mut() {
+                input_data.set_text(
+                    &mut self.doc.font_ctx.lock().unwrap(),
+                    &mut self.doc.layout_ctx,
+                    "",
+                );
+                self.mutations_occurred |= node_is_in_document;
+            }
+        } else if (&element.name.local, &name.local) == tag_and_attr!("input", "checked") {
+            set_input_checked_state(element, false);
+            self.mutations_occurred |= node_is_in_document;
+        }
+
         if !had_attr {
             return;
         }
@@ -465,17 +483,6 @@ impl DocumentMutator<'_> {
             element.flush_link_state();
         }
 
-        // Update text input value
-        if name.local == local_name!("value") {
-            if let Some(input_data) = element.text_input_data_mut() {
-                input_data.set_text(
-                    &mut self.doc.font_ctx.lock().unwrap(),
-                    &mut self.doc.layout_ctx,
-                    "",
-                );
-            }
-        }
-
         let tag = &element.name.local;
         let attr = &name.local;
 
@@ -487,8 +494,6 @@ impl DocumentMutator<'_> {
         if *attr == local_name!("style") {
             element.flush_style_attribute(&self.doc.guard, &self.doc.url.url_extra_data());
             node.set_restyle_hint(RestyleHint::RESTYLE_STYLE_ATTRIBUTE);
-        } else if (tag, attr) == tag_and_attr!("input", "checked") {
-            element.set_checkbox_input_checked(false);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.recompute_is_animating = true;
         } else if (tag, attr) == tag_and_attr!("link", "href") {
@@ -1298,22 +1303,12 @@ impl<'doc> DocumentMutator<'doc> {
     }
 }
 
-/// Set 'checked' state on an input based on given attributevalue
-fn set_input_checked_state(element: &mut ElementData, value: String) {
-    let Ok(checked) = value.parse() else {
-        return;
-    };
-    match element.special_data {
-        SpecialElementData::CheckboxInput(_) => element.set_checkbox_input_checked(checked),
-        // If we have just constructed the element, set the node attribute,
-        // and NodeSpecificData will be created from that later
-        // this simulates the checked attribute being set in html,
-        // and the element's checked property being set from that
-        SpecialElementData::None => element.attrs.push(Attribute {
-            name: qual_name!("checked", html),
-            value: checked.to_string(),
-        }),
-        _ => {}
+/// Set the checkedness of a checkbox or radio input when its `checked` attribute
+/// is added or removed. An input whose state has not been created yet reads the
+/// attribute's presence when it is.
+fn set_input_checked_state(element: &mut ElementData, checked: bool) {
+    if element.checkbox_input_checked().is_some() {
+        element.set_checkbox_input_checked(checked);
     }
 }
 

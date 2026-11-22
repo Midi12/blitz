@@ -34,7 +34,7 @@ use crate::{
 use super::{
     damage::ALL_DAMAGE,
     list::{BULLET_FONT_FAMILY, collect_list_item_children},
-    replaced::is_inline_box_element,
+    replaced::{is_inline_box_element, is_replaced_element},
     table::build_table_context,
     text_transform::{CaseTransform, TextTransformer},
 };
@@ -494,6 +494,14 @@ fn collect_layout_children_with_wrap(
                     let _ = err;
                 }
             };
+            return;
+        }
+
+        // The content of a replaced element is outside the scope of the CSS formatting
+        // model (CSS 2.2 §3): its children generate no boxes, whatever its `display`.
+        // Constructing a table from them would also replace the element's image,
+        // canvas or sub-document data, which its layout reads.
+        if is_replaced_element(&el.name.local) {
             return;
         }
 
@@ -1326,6 +1334,46 @@ pub(crate) fn build_inline_layout_into(
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             }
             NodeData::Document(_) => unreachable!(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Attribute, BaseDocument, DocumentConfig, qual_name};
+
+    #[test]
+    fn replaced_element_with_children_and_table_display() {
+        // The children of a replaced element generate no boxes, so `display: table`
+        // does not make it a table root, and its layout keeps its own data.
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+        let table = || {
+            vec![Attribute {
+                name: qual_name!("style"),
+                value: "display: table".to_string(),
+            }]
+        };
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html"), vec![]);
+        let img = mutator.create_element(qual_name!("img"), table());
+        let embed = mutator.create_element(qual_name!("embed"), table());
+        let video = mutator.create_element(qual_name!("video"), table());
+        for parent in [img, embed, video] {
+            let div = mutator.create_element(qual_name!("div"), vec![]);
+            let text = mutator.create_text_node("child");
+            mutator.append_children(parent, &[div, text]);
+        }
+        mutator.append_children(html, &[img, embed, video]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+
+        document.resolve(0.0);
+        for id in [img, embed, video] {
+            assert!(!document.nodes[id].flags.is_table_root());
+            let layout_children = document.nodes[id].layout_children.borrow();
+            assert!(layout_children.as_ref().is_none_or(|c| c.is_empty()));
         }
     }
 }

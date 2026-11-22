@@ -518,11 +518,14 @@ fn collect_columns(
         }
         DisplayInside::TableColumn => {
             let style = table_taffy_style(&node.primary_styles().unwrap(), wm);
-            let span: u16 = node
+            // HTML §4.9.12.1, "forming a table": a missing, invalid or zero span is 1 and
+            // a larger one is at most 1000. The grid has at most `u16::MAX` columns, so
+            // columns past that are dropped.
+            let span = node
                 .attr(local_name!("span"))
-                .and_then(|val| val.parse::<u16>().ok())
-                .map(|v| v.max(1))
-                .unwrap_or(1);
+                .and_then(parse_non_negative_integer)
+                .map_or(1, |v| v.clamp(1, 1000) as usize)
+                .min(usize::from(u16::MAX).saturating_sub(columns.len()));
             let column: TrackSizingFunction = match style.size.width.tag() {
                 taffy::CompactLength::LENGTH_TAG => {
                     // A definite `max-width` clamps the column width; a zero width is treated as auto
@@ -920,13 +923,18 @@ mod tests {
         assert_eq!(parse_non_negative_integer("99999999999"), Some(u32::MAX));
     }
 
-    /// The row and column each cell of `table` was placed in
-    fn cell_positions(document: &BaseDocument, table: NodeId) -> Vec<(u16, u16)> {
+    fn table_context(document: &BaseDocument, table: NodeId) -> &TableContext {
         let element = document.nodes[table].data.downcast_element().unwrap();
         let SpecialElementData::TableRoot(context) = &element.special_data else {
             panic!("not a table root");
         };
-        context.cells.iter().map(|c| (c.row, c.column)).collect()
+        context
+    }
+
+    /// The row and column each cell of `table` was placed in
+    fn cell_positions(document: &BaseDocument, table: NodeId) -> Vec<(u16, u16)> {
+        let cells = &table_context(document, table).cells;
+        cells.iter().map(|c| (c.row, c.column)).collect()
     }
 
     #[test]
@@ -966,5 +974,47 @@ mod tests {
             cell_positions(&document, table),
             [(0, 0), (0, 1000), (0, 1001), (0, 1002)]
         );
+    }
+
+    #[test]
+    fn column_spans_are_clamped_and_bounded() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+        let attr = |name, value: &str| Attribute {
+            name,
+            value: value.to_string(),
+        };
+        // Columns with a width are kept even where no cell is
+        let col = |span: &str| {
+            vec![
+                attr(qual_name!("span"), span),
+                attr(qual_name!("style"), "width: 1px"),
+            ]
+        };
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let table = mutator.create_element(qual_name!("table", html), vec![]);
+        let first = mutator.create_element(qual_name!("col", html), col("5000"));
+        let second = mutator.create_element(qual_name!("col", html), col("0"));
+        mutator.append_children(table, &[first, second]);
+        for _ in 0..70 {
+            let wide = mutator.create_element(qual_name!("col", html), col("65535"));
+            mutator.append_children(table, &[wide]);
+        }
+        let tr = mutator.create_element(qual_name!("tr", html), vec![]);
+        let td = mutator.create_element(qual_name!("td", html), vec![]);
+        mutator.append_children(tr, &[td]);
+        mutator.append_children(table, &[tr]);
+        mutator.append_children(html, &[table]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+
+        document.resolve(0.0);
+        let columns = &table_context(&document, table).columns;
+        assert_eq!(columns.len(), usize::from(u16::MAX));
+        assert_eq!(columns[999].node_id, first);
+        assert_eq!(columns[1000].node_id, second);
+        assert_ne!(columns[1001].node_id, second);
     }
 }

@@ -72,6 +72,9 @@ pub struct TextInputData {
     /// vertical offset. It is kept up to date so that the caret remains visible within the
     /// input's content box.
     pub scroll_offset: f32,
+    /// The `placeholder` hint, laid out with the styles of the value and shown
+    /// while the value is empty
+    pub placeholder: Option<Box<parley::PlainEditor<TextBrush>>>,
 }
 
 // FIXME: Implement Clone for PlainEditor
@@ -88,7 +91,31 @@ impl TextInputData {
             editor,
             is_multiline,
             scroll_offset: 0.0,
+            placeholder: None,
         }
+    }
+
+    /// Set the `placeholder` hint (HTML 4.10.5.3.10, 4.10.11). A single-line
+    /// control shows it with its line breaks stripped. Its styles, scale and
+    /// width are set with those of the value (see [`Self::editors_mut`]).
+    pub fn set_placeholder(&mut self, placeholder: Option<&str>) {
+        let Some(text) = placeholder.filter(|text| !text.is_empty()) else {
+            self.placeholder = None;
+            return;
+        };
+        let text = if self.is_multiline {
+            text.to_string()
+        } else {
+            text.replace(['\r', '\n'], "")
+        };
+        self.placeholder
+            .get_or_insert_with(|| Box::new(parley::PlainEditor::new(16.0)))
+            .set_text(&text);
+    }
+
+    /// The editor of the value and, if there is a placeholder, its editor
+    pub fn editors_mut(&mut self) -> impl Iterator<Item = &mut parley::PlainEditor<TextBrush>> {
+        std::iter::once(&mut *self.editor).chain(self.placeholder.as_deref_mut())
     }
 
     pub fn set_text(

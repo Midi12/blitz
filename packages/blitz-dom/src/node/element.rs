@@ -994,6 +994,23 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_strips_line_breaks_of_a_single_line_control() {
+        let text = |data: &TextInputData| {
+            data.placeholder.as_ref().map(|p| p.raw_text().to_string())
+        };
+        let mut single = TextInputData::new(false);
+        single.set_placeholder(Some("a\r\nb"));
+        assert_eq!(text(&single).as_deref(), Some("ab"));
+        assert_eq!(single.editors_mut().count(), 2);
+        single.set_placeholder(Some(""));
+        assert_eq!(text(&single), None);
+
+        let mut multi = TextInputData::new(true);
+        multi.set_placeholder(Some("a\nb"));
+        assert_eq!(text(&multi).as_deref(), Some("a\nb"));
+    }
+
+    #[test]
     fn short_text_does_not_scroll() {
         let mut data = make_input(false, "hi");
         // A wide content box that comfortably fits the text.

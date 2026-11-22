@@ -45,6 +45,10 @@ use peniko::{self, Fill, ImageData, ImageSampler};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
 
+/// The placeholder of a text control is painted in its text colour at this
+/// opacity (HTML leaves its look to the user agent; Firefox uses 0.54).
+const PLACEHOLDER_OPACITY: f32 = 0.54;
+
 /// A view of the track positions reported by taffy in physical (left-to-right /
 /// top-to-bottom) order. Taffy reports tracks in logical order, which for RTL grid
 /// containers is physically reversed.
@@ -951,17 +955,47 @@ impl ElementCx<'_, '_> {
                 };
             }
 
-            // Render text
+            // Render the value, or the placeholder while the value is empty
             let mut draw_text_context = self.context.draw_text_context.borrow_mut();
-            crate::text::stroke_text(
-                scene,
-                input_data.editor.try_layout().unwrap().lines(),
-                self.context.dom,
-                transform,
-                self.scale,
-                self.node.id,
-                &mut draw_text_context,
-            );
+            let placeholder = input_data
+                .placeholder
+                .as_ref()
+                .filter(|_| input_data.editor.raw_text().is_empty())
+                .and_then(|placeholder| placeholder.try_layout());
+            if let Some(layout) = placeholder {
+                let (width, height) = (layout.full_width() as f64, layout.height() as f64);
+                let bounds = Rect::new(0.0, 0.0, width, height).inflate(height, height);
+                self.context.layer_manager.maybe_with_layer(
+                    scene,
+                    true,
+                    PLACEHOLDER_OPACITY,
+                    transform,
+                    &bounds,
+                    None,
+                    None,
+                    |scene| {
+                        crate::text::stroke_text(
+                            scene,
+                            layout.lines(),
+                            self.context.dom,
+                            transform,
+                            self.scale,
+                            self.node.id,
+                            &mut draw_text_context,
+                        )
+                    },
+                );
+            } else {
+                crate::text::stroke_text(
+                    scene,
+                    input_data.editor.try_layout().unwrap().lines(),
+                    self.context.dom,
+                    transform,
+                    self.scale,
+                    self.node.id,
+                    &mut draw_text_context,
+                );
+            }
         }
     }
 

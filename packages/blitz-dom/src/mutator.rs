@@ -1297,6 +1297,12 @@ impl<'doc> DocumentMutator<'doc> {
                     return;
                 }
 
+                // A no-op provider never answers: waiting would keep the url and the
+                // node id for the life of the document
+                if self.doc.net_provider.is_noop() {
+                    return;
+                }
+
                 // Check if there's already a pending request for this URL
                 if let Some(waiting_list) = self.doc.pending_images.get_mut(src_string) {
                     #[cfg(feature = "tracing")]
@@ -1549,6 +1555,37 @@ mod test {
         drop(mutator);
 
         document.resolve(0.0);
+    }
+
+    #[test]
+    fn images_wait_for_nothing_with_a_no_op_net_provider() {
+        // The default net provider never answers, so nothing may wait for it
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+        let attr = |name, value: &str| Attribute {
+            name,
+            value: value.to_string(),
+        };
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html"), vec![]);
+        let img = mutator.create_element(
+            qual_name!("img"),
+            vec![attr(qual_name!("src"), "http://a.invalid/1.png")],
+        );
+        let div = mutator.create_element(
+            qual_name!("div"),
+            vec![attr(
+                qual_name!("style"),
+                "background-image: url(http://a.invalid/2.png); \
+                 mask-image: url(http://a.invalid/3.png)",
+            )],
+        );
+        mutator.append_children(html, &[img, div]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        document.resolve(0.0);
+        assert!(document.pending_images.is_empty());
     }
 
     #[test]

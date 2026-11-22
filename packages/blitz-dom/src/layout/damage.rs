@@ -589,6 +589,10 @@ impl BaseDocument {
                             status: Status::Ok,
                             image: cached_image.clone(),
                         })
+                    } else if self.net_provider.is_noop() {
+                        // A no-op provider never answers: waiting would keep the url and
+                        // the node id for the life of the document
+                        Some(ImageResourceData::new(new_url.clone()))
                     } else if let Some(waiting_list) = self.pending_images.get_mut(url_str) {
                         // Image is already being fetched, queue this node
                         #[cfg(feature = "tracing")]

@@ -247,7 +247,7 @@ fn radial_gradient(
             let scale = if repeating && gradient.stops.len() >= 2 {
                 (last_offset - first_offset) as f64
             } else {
-                1.0
+                stretch_past_last_stop(&mut gradient.stops)
             };
             Some(
                 Affine::scale_non_uniform(gradient_scale.x * scale, gradient_scale.y * scale)
@@ -259,6 +259,30 @@ fn radial_gradient(
     };
 
     (gradient, gradient_transform)
+}
+
+/// The colour after the last stop of a gradient that does not repeat is
+/// padded from offset 1, and renderers sample the pad colour at offset 1. A hard
+/// stop at the ending shape (`circle 20px, red 20px, blue 20px`) or a stop past
+/// it then pads the wrong colour, or one past the ramp. Divide the offsets so
+/// that the stops end halfway, pad the last colour from there to 1, and return
+/// the factor by which the gradient's geometry must grow to match.
+fn stretch_past_last_stop(stops: &mut peniko::ColorStops) -> f64 {
+    let &[.., before_last, last] = stops.as_slice() else {
+        return 1.0;
+    };
+    if last.offset < 1.0 || (last.offset == 1.0 && before_last.offset < 1.0) {
+        return 1.0;
+    }
+    let stretch = 2.0 * last.offset;
+    for stop in stops.iter_mut() {
+        stop.offset /= stretch;
+    }
+    stops.push(ColorStop {
+        offset: 1.0,
+        ..last
+    });
+    stretch as f64
 }
 
 fn conic_gradient(
@@ -517,6 +541,32 @@ fn get_translation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stops(stops: &[(f32, [f32; 4])]) -> peniko::ColorStops {
+        let mut out = peniko::ColorStops::default();
+        for &(offset, color) in stops {
+            out.push(ColorStop {
+                offset,
+                color: DynamicColor::from_alpha_color(Color::new(color)),
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn hard_stop_at_the_end_is_moved_inside_the_ramp() {
+        const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+        let mut hard = stops(&[(0.0, RED), (1.0, RED), (1.0, BLUE)]);
+        assert_eq!(stretch_past_last_stop(&mut hard), 2.0);
+        let offsets: Vec<f32> = hard.iter().map(|stop| stop.offset).collect();
+        assert_eq!(offsets, [0.0, 0.5, 0.5, 1.0]);
+        assert_eq!(hard.last().unwrap().color, hard[2].color);
+
+        let mut smooth = stops(&[(0.0, RED), (1.0, BLUE)]);
+        assert_eq!(stretch_past_last_stop(&mut smooth), 1.0);
+        assert_eq!(smooth.len(), 2);
+    }
 
     #[test]
     fn gradient_percentage_overflow_is_clamped() {

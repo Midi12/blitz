@@ -4,6 +4,7 @@ use blitz_traits::events::{
     UiEvent,
 };
 use blitz_traits::node_id::NodeId;
+use keyboard_types::Modifiers;
 use std::collections::VecDeque;
 
 pub trait EventHandler {
@@ -186,6 +187,7 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
             UiEvent::PointerDown(event) => {
                 hover_node_id = self.handle_pointer_move(event);
                 let mut doc = self.doc.inner_mut();
+                doc.set_keyboard_modality(false);
                 doc.active_node();
                 doc.set_mousedown_node_id(hover_node_id);
             }
@@ -210,6 +212,13 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
             UiEvent::PointerLeave(event) => {
                 self.handle_pointer_leave(event);
                 hover_node_id = None;
+            }
+            UiEvent::KeyDown(event) => {
+                // A shortcut is not keyboard navigation (`:focus-visible`)
+                let shortcut = Modifiers::CONTROL | Modifiers::ALT | Modifiers::META;
+                if !event.modifiers.intersects(shortcut) {
+                    self.doc.inner_mut().set_keyboard_modality(true);
+                }
             }
             _ => {}
         };

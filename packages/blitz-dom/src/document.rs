@@ -298,6 +298,9 @@ pub struct BaseDocument {
     pub(crate) last_client_pointer_position: Option<taffy::Point<f32>>,
     /// The node which is currently focussed (if any)
     pub(crate) focus_node_id: Option<NodeId>,
+    /// Whether the user last interacted through the keyboard rather than a
+    /// pointing device (`:focus-visible`). True until the first pointer press.
+    pub(crate) keyboard_modality: bool,
     /// The node which is currently active (if any)
     pub(crate) active_node_id: Option<NodeId>,
     /// The node which recieved a mousedown event (if any)
@@ -502,6 +505,7 @@ impl BaseDocument {
             hover_node_is_text: false,
             last_client_pointer_position: None,
             focus_node_id: None,
+            keyboard_modality: true,
             active_node_id: None,
             mousedown_node_id: None,
             has_active_animations: false,
@@ -1718,6 +1722,30 @@ impl BaseDocument {
     pub fn set_mousedown_node_id(&mut self, node_id: Option<NodeId>) {
         self.mousedown_node_id = node_id.and_then(|id| self.nearest_non_anonymous_ancestor(id));
     }
+
+    /// Record whether the user last interacted through the keyboard (`true`) or
+    /// a pointing device (`false`), which decides whether a focus that follows
+    /// matches `:focus-visible`. Keyboard use also makes the focused element
+    /// match (Selectors 4, 13.3 "The Focus-Indicated Pseudo-class").
+    pub(crate) fn set_keyboard_modality(&mut self, keyboard: bool) {
+        self.keyboard_modality = keyboard;
+        let Some(id) = self.focus_node_id.filter(|_| keyboard) else {
+            return;
+        };
+        if self.nodes[id]
+            .element_data()
+            .is_some_and(|data| !data.element_state.contains(ElementState::FOCUSRING))
+        {
+            self.snapshot_node_and(id, ElementState::FOCUSRING, |node| {
+                if let Some(data) = node.element_data_mut() {
+                    data.element_state.insert(ElementState::FOCUSRING);
+                }
+                node.mark_ancestors_dirty();
+            });
+            self.shell_provider.request_redraw();
+        }
+    }
+
     pub fn set_focus_to(&mut self, focus_node_id: NodeId) -> bool {
         let Some(focus_node_id) = self.nearest_non_anonymous_ancestor(focus_node_id) else {
             return false;
@@ -1743,10 +1771,11 @@ impl BaseDocument {
         }
 
         // Focus the new node
+        let keyboard_focus = self.keyboard_modality;
         self.snapshot_node_and(
             focus_node_id,
             ElementState::FOCUS | ElementState::FOCUSRING,
-            |node| node.focus(shell_provider),
+            |node| node.focus(keyboard_focus, shell_provider),
         );
 
         // Update :focus-within on the ancestor chains (shared prefix stays)

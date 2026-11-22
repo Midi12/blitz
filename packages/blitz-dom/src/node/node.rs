@@ -745,19 +745,23 @@ impl Node {
             .is_some_and(|data| data.element_state.contains(ElementState::FOCUS_WITHIN))
     }
 
-    pub fn focus(&mut self, shell_provider: Arc<dyn ShellProvider>) {
+    /// Focus this node. It matches `:focus-visible` when `keyboard_focus` is set
+    /// (the focus came from the keyboard, or from a script after a key press) or
+    /// when it takes text input (Selectors 4, 13.3 "The Focus-Indicated
+    /// Pseudo-class").
+    pub fn focus(&mut self, keyboard_focus: bool, shell_provider: Arc<dyn ShellProvider>) {
+        let takes_text_input = self
+            .element_data()
+            .and_then(|elem| elem.text_input_data())
+            .is_some();
         if let Some(data) = self.element_data_mut() {
-            data.element_state
-                .insert(ElementState::FOCUS | ElementState::FOCUSRING);
+            data.element_state.insert(ElementState::FOCUS);
+            data.element_state.set(ElementState::FOCUSRING, keyboard_focus || takes_text_input);
         }
         self.mark_ancestors_dirty();
 
         // If focussing a text input, enable IME and set IME area
-        if self
-            .element_data()
-            .and_then(|elem| elem.text_input_data())
-            .is_some()
-        {
+        if takes_text_input {
             shell_provider.set_ime_enabled(true);
             let mut pos = self.absolute_position(0.0, 0.0);
             pos.x += self.final_layout().content_box_x();

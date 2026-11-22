@@ -110,7 +110,7 @@ impl ColumnCursor {
     }
 
     fn place(&mut self, colspan: u16, rowspan: u16) {
-        let end = self.col + colspan;
+        let end = self.col.saturating_add(colspan);
         if self.rowspans.len() < end as usize {
             self.rowspans.resize(end as usize, 0);
         }
@@ -120,6 +120,25 @@ impl ColumnCursor {
         self.col = end;
         self.num_columns = self.num_columns.max(end);
     }
+}
+
+/// The HTML "rules for parsing non-negative integers" (HTML §2.3.4.1), saturating at
+/// `u32::MAX`: leading ASCII whitespace and a `+` are skipped and parsing stops at the
+/// first character that is not a digit, so `" 3px"` is 3.
+fn parse_non_negative_integer(value: &str) -> Option<u32> {
+    let value = value.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (negative, digits) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let mut result: Option<u32> = None;
+    for digit in digits.bytes().take_while(u8::is_ascii_digit) {
+        let n = result.get_or_insert(0);
+        *n = n.saturating_mul(10).saturating_add(u32::from(digit - b'0'));
+    }
+    // "-0" is zero, any other negative value is an error
+    result.filter(|&value| !negative || value == 0)
 }
 
 #[derive(Debug, Clone)]
@@ -656,15 +675,18 @@ fn collect_table_cells(
         DisplayInside::TableCell => {
             // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             let stylo_style = &node.primary_styles().unwrap();
-            let colspan: u16 = node
+            // HTML §4.9.12.1, "the algorithm for processing rows": a missing, invalid or
+            // zero colspan is 1 and a larger one is at most 1000; a missing or invalid
+            // rowspan is 1 and a larger one is at most 65534. A zero rowspan spans the
+            // rest of the row group, which is not supported: the cell spans one row.
+            let colspan = node
                 .attr(local_name!("colspan"))
-                .and_then(|val| val.parse().ok())
-                .unwrap_or(1);
-            let rowspan: u16 = node
+                .and_then(parse_non_negative_integer)
+                .map_or(1, |v| v.clamp(1, 1000) as u16);
+            let rowspan = node
                 .attr(local_name!("rowspan"))
-                .and_then(|val| val.parse::<u16>().ok())
-                .map(|v| v.clamp(1, 65534))
-                .unwrap_or(1);
+                .and_then(parse_non_negative_integer)
+                .map_or(1, |v| v.clamp(1, 65534) as u16);
             let mut style = table_taffy_style(stylo_style, wm);
             let col = cursor.next_free();
 
@@ -880,5 +902,69 @@ impl taffy::LayoutGridContainer for TableTreeWrapper<'_, '_> {
         detailed_grid_info: DetailedGridInfo<Atom>,
     ) {
         *self.ctx.computed_grid_info.borrow_mut() = Some(detailed_grid_info);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Attribute, DocumentConfig, node::SpecialElementData, qual_name};
+
+    #[test]
+    fn non_negative_integers_parse_as_html_says() {
+        assert_eq!(parse_non_negative_integer(" +12px"), Some(12));
+        assert_eq!(parse_non_negative_integer("-0"), Some(0));
+        assert_eq!(parse_non_negative_integer("-3"), None);
+        assert_eq!(parse_non_negative_integer("px"), None);
+        assert_eq!(parse_non_negative_integer(""), None);
+        assert_eq!(parse_non_negative_integer("99999999999"), Some(u32::MAX));
+    }
+
+    /// The row and column each cell of `table` was placed in
+    fn cell_positions(document: &BaseDocument, table: NodeId) -> Vec<(u16, u16)> {
+        let element = document.nodes[table].data.downcast_element().unwrap();
+        let SpecialElementData::TableRoot(context) = &element.special_data else {
+            panic!("not a table root");
+        };
+        context.cells.iter().map(|c| (c.row, c.column)).collect()
+    }
+
+    #[test]
+    fn cell_spans_are_clamped() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+        let attr = |name, value: &str| Attribute {
+            name,
+            value: value.to_string(),
+        };
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let table = mutator.create_element(qual_name!("table", html), vec![]);
+        let tr = mutator.create_element(qual_name!("tr", html), vec![]);
+        let wide = mutator.create_element(
+            qual_name!("td", html),
+            vec![
+                attr(qual_name!("colspan"), "65535"),
+                attr(qual_name!("rowspan"), "0"),
+            ],
+        );
+        let after_wide = mutator.create_element(qual_name!("td", html), vec![]);
+        let after_that = mutator.create_element(
+            qual_name!("td", html),
+            vec![attr(qual_name!("colspan"), "-2")],
+        );
+        let last = mutator.create_element(qual_name!("td", html), vec![]);
+        mutator.append_children(tr, &[wide, after_wide, after_that, last]);
+        mutator.append_children(table, &[tr]);
+        mutator.append_children(html, &[table]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+
+        document.resolve(0.0);
+        assert_eq!(
+            cell_positions(&document, table),
+            [(0, 0), (0, 1000), (0, 1001), (0, 1002)]
+        );
     }
 }

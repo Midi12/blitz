@@ -343,6 +343,9 @@ pub struct BaseDocument {
     pub(crate) controls_to_form: HashMap<NodeId, NodeId>,
     /// Nodes that contain sub documents
     pub(crate) sub_document_nodes: HashSet<NodeId>,
+    /// The `position: sticky` boxes, ancestors before descendants, collected after each layout
+    /// so that a scroll repositions them without walking the tree
+    pub(crate) sticky_nodes: Vec<NodeId>,
     /// Load state (abort controller and in-flight request id) for each
     /// `<iframe>` element whose sub-document is loaded automatically
     pub(crate) iframe_loads: HashMap<NodeId, crate::iframe::IframeLoad>,
@@ -505,6 +508,7 @@ impl BaseDocument {
             subdoc_is_animating: false,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
+            sticky_nodes: Vec::new(),
             iframe_loads: HashMap::new(),
 
             #[cfg(feature = "custom-widget")]
@@ -2253,6 +2257,7 @@ impl BaseDocument {
 
     pub fn set_viewport_scroll(&mut self, scroll: crate::Point<f64>) {
         self.nodes.set_viewport_scroll(scroll);
+        self.update_sticky_offsets();
     }
 
     /// Find the node targeted by a URL fragment (the `#...` part of a URL).
@@ -2283,8 +2288,9 @@ impl BaseDocument {
         let mut current = Some(node_id);
         while let Some(id) = current {
             let node = &self.nodes[id];
-            pos.x += node.unrounded_layout().location.x - node.scroll_offset().x as f32;
-            pos.y += node.unrounded_layout().location.y - node.scroll_offset().y as f32;
+            let location = node.unrounded_layout().location + node.sticky_offset();
+            pos.x += location.x - node.scroll_offset().x as f32;
+            pos.y += location.y - node.scroll_offset().y as f32;
             current = node.containing_block();
         }
         (pos, *self.nodes[node_id].unrounded_layout())

@@ -129,6 +129,11 @@ pub struct LayoutData {
     pub final_layout: Layout,
     pub scroll_offset: crate::Point<f64>,
     pub scrollable_overflow: KurboRect,
+    /// The shift of a `position: sticky` box from its in-flow position, in CSS px, that keeps
+    /// it inside its nearest scrollport (CSS Positioned Layout 3 §3.4). Set after layout and
+    /// after each scroll, zero for other boxes. It is not part of `final_layout`: paint, hit
+    /// testing and CSSOM geometry add it to `location`, layout and scrollable overflow ignore it.
+    pub sticky_offset: taffy::Point<f32>,
     /// The writing mode this node's layout algorithm ran in (the root takes it from `<body>`),
     /// recorded by the layout pass for CSSOM geometry lookups.
     #[cfg(feature = "writing-mode")]
@@ -143,6 +148,7 @@ impl LayoutData {
             final_layout: Layout::new(),
             scroll_offset: crate::Point::ZERO,
             scrollable_overflow: KurboRect::ZERO,
+            sticky_offset: taffy::Point::ZERO,
             #[cfg(feature = "writing-mode")]
             writing_mode: stylo_taffy::WritingMode::empty(),
         }

@@ -382,8 +382,9 @@ impl BaseDocument {
         let mut current = Some(node_id);
         while let Some(id) = current {
             let node = &self.nodes[id];
-            pos.x += node.unrounded_layout().location.x - node.scroll_offset().x as f32;
-            pos.y += node.unrounded_layout().location.y - node.scroll_offset().y as f32;
+            let location = node.unrounded_layout().location + node.sticky_offset();
+            pos.x += location.x - node.scroll_offset().x as f32;
+            pos.y += location.y - node.scroll_offset().y as f32;
             has_vertical |= node.layout_data().writing_mode.is_vertical();
             current = node.containing_block();
         }
@@ -395,8 +396,9 @@ impl BaseDocument {
         let node = &self.nodes[node_id];
         let (mut pos, placer_wm, placer_size) = self.placer_geometry(node, node_id, root_id);
         let layout = physical_layout(*node.unrounded_layout(), placer_wm, placer_size);
-        pos.x += layout.location.x - node.scroll_offset().x as f32;
-        pos.y += layout.location.y - node.scroll_offset().y as f32;
+        let location = layout.location + node.sticky_offset();
+        pos.x += location.x - node.scroll_offset().x as f32;
+        pos.y += location.y - node.scroll_offset().y as f32;
         (pos, layout)
     }
 
@@ -428,6 +430,7 @@ impl BaseDocument {
         } else {
             (logical.location, logical.size)
         };
+        let location = location + placer.sticky_offset();
         pos.x += location.x - placer.scroll_offset().x as f32;
         pos.y += location.y - placer.scroll_offset().y as f32;
         (pos, placer.layout_data().writing_mode, size)

@@ -284,6 +284,13 @@ impl Node {
         &mut self.layout_data_mut().scroll_offset
     }
 
+    /// The shift of a `position: sticky` box from its in-flow position (zero for other boxes),
+    /// to be added to `final_layout().location` wherever the box is placed on screen.
+    #[inline]
+    pub fn sticky_offset(&self) -> taffy::Point<f32> {
+        self.layout_data().sticky_offset
+    }
+
     #[inline]
     pub fn scrollable_overflow(&self) -> &KurboRect {
         &self.layout_data().scrollable_overflow
@@ -1397,8 +1404,9 @@ impl Node {
             .primary_styles()
             .is_some_and(|style| style.clone_pointer_events() == PointerEvents::None);
 
-        let mut x = x - self.final_layout().location.x + self.scroll_offset().x as f32;
-        let mut y = y - self.final_layout().location.y + self.scroll_offset().y as f32;
+        let location = self.final_layout().location + self.sticky_offset();
+        let mut x = x - location.x + self.scroll_offset().x as f32;
+        let mut y = y - location.y + self.scroll_offset().y as f32;
 
         if let Some(t) = self.transform().as_deref() {
             let p = t.inverse() * kurbo::Point::new(x as f64 * scale, y as f64 * scale);
@@ -1648,8 +1656,9 @@ impl Node {
 
     /// Computes the Document-relative coordinates of the `Node`
     pub fn absolute_position(&self, x: f32, y: f32) -> crate::util::Point<f32> {
-        let x = x + self.final_layout().location.x - self.scroll_offset().x as f32;
-        let y = y + self.final_layout().location.y - self.scroll_offset().y as f32;
+        let location = self.final_layout().location + self.sticky_offset();
+        let x = x + location.x - self.scroll_offset().x as f32;
+        let y = y + location.y - self.scroll_offset().y as f32;
 
         // Recurse up the positioning hierarchy
         self.containing_block()
@@ -1826,9 +1835,9 @@ impl Node {
         }
 
         loop {
-            let layout = current.final_layout();
-            x += layout.location.x;
-            y += layout.location.y;
+            let location = current.final_layout().location + current.sticky_offset();
+            x += location.x;
+            y += location.y;
 
             let Some(parent_id) = current.containing_block() else {
                 break;

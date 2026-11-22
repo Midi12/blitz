@@ -24,8 +24,8 @@ use taffy::{Point, Rect};
 
 /// Offset of the hoisted child `child_id` from the border box of its
 /// stacking-context root `sc_root_id`, excluding the child's own
-/// `final_layout().location`: the sum of `location - scroll_offset` of every
-/// box strictly between the two on the child's positioning chain.
+/// `final_layout().location`: the sum of `location + sticky_offset - scroll_offset`
+/// of every box strictly between the two on the child's positioning chain.
 ///
 /// Walks `Node::containing_block` (the out-of-flow containing block for boxes
 /// hoisted by Taffy, otherwise `layout_parent`, which is set for every layout
@@ -56,7 +56,7 @@ pub fn hoisted_child_position(tree: &NodeTree, sc_root_id: NodeId, child_id: Nod
         let Some(node) = tree.get(id) else {
             break;
         };
-        let location = node.final_layout().location;
+        let location = node.final_layout().location + node.sticky_offset();
         let scroll_offset = *node.scroll_offset();
         position.x += location.x - scroll_offset.x as f32;
         position.y += location.y - scroll_offset.y as f32;
@@ -146,7 +146,7 @@ impl StackingContext {
         let child_rect = |child: &HoistedPaintChild| -> Rect<f32> {
             let node = &tree[child.node_id];
             let position = child.position(tree, sc_root_id);
-            let location = node.final_layout().location;
+            let location = node.final_layout().location + node.sticky_offset();
             let mut overflow = *node.scrollable_overflow();
             if let Some(transform) = node.transform().as_deref() {
                 overflow = transform.transform_rect_bbox(overflow);

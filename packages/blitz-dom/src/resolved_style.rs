@@ -42,7 +42,7 @@ fn format_px(px: f32) -> String {
 
 /// Resolve a computed inset value to CSS pixels against the given percentage
 /// basis. Returns `None` for `auto` (and unsupported anchor functions).
-fn resolve_inset<P>(val: &GenericInset<P, LengthPercentage>, basis: f32) -> Option<f32> {
+pub(crate) fn resolve_inset<P>(val: &GenericInset<P, LengthPercentage>, basis: f32) -> Option<f32> {
     match val {
         GenericInset::LengthPercentage(lp) => Some(lp.resolve(CSSPixelLength::new(basis)).px()),
         _ => None,

@@ -112,6 +112,7 @@ impl BaseDocument {
         self.resolve_layout();
         timer.record_time("layout");
         self.nodes.bump_geometry_generation();
+        self.resolve_sticky_positions();
 
         // Resolve transforms
         self.resolve_transforms(root_node_id);

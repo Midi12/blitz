@@ -154,10 +154,19 @@ pub fn walk_tree(indent: usize, node: &Node) {
 }
 
 /// Parse an SVG image.
+///
+/// usvg's default image resolver reads the `href` of an `<image>` element as a
+/// local file path. Blitz loads every resource through its net provider and
+/// never reads files itself, so only embedded `data:` URLs are resolved here and
+/// any other `href` is left out.
 #[cfg(feature = "svg")]
 pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
     let options = usvg::Options {
         fontdb: Arc::clone(&*FONT_DB),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
         ..Default::default()
     };
     crate::node::SvgImageData::from_data(source, &options)
@@ -184,6 +193,30 @@ mod svg_tests {
     #[test]
     fn svg_without_xmlns_parses() {
         let src = br#"<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>"#;
+        let svg = parse_svg_image(src).unwrap();
+        assert!(!svg.tree.root().children().is_empty());
+    }
+
+    #[test]
+    fn image_href_does_not_read_local_files() {
+        let path = std::env::temp_dir().join(format!("blitz-svg-href-{}.svg", std::process::id()));
+        std::fs::write(
+            &path,
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1"/></svg>"#,
+        )
+        .unwrap();
+        let src = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image href="{}" width="10" height="10"/></svg>"#,
+            path.display()
+        );
+        let svg = parse_svg_image(src.as_bytes());
+        std::fs::remove_file(&path).unwrap();
+        assert!(svg.unwrap().tree.root().children().is_empty());
+    }
+
+    #[test]
+    fn image_href_data_url_is_resolved() {
+        let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxIiBoZWlnaHQ9IjEiPjxyZWN0IHdpZHRoPSIxIiBoZWlnaHQ9IjEiLz48L3N2Zz4=" width="10" height="10"/></svg>"#;
         let svg = parse_svg_image(src).unwrap();
         assert!(!svg.tree.root().children().is_empty());
     }

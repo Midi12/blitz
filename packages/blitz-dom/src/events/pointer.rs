@@ -841,12 +841,18 @@ pub(crate) fn handle_click(
                     } else {
                         el.special_data = SpecialElementData::FileInput(files.into())
                     }
-                    let child_label_id = doc.nodes[node_id].children[1];
-                    let child_text_id = doc.nodes[child_label_id].children[0];
-                    let text_data = doc.nodes[child_text_id]
-                        .text_data_mut()
-                        .expect("Text data not found");
-                    text_data.content = text_content;
+                    // The text of the label that `process_button_input` made, if the input
+                    // has it: an input given `type="file"` after insertion has none, and
+                    // children added by the page move it
+                    let text_id = doc.nodes[node_id]
+                        .children
+                        .get(1)
+                        .and_then(|&label_id| doc.nodes[label_id].children.first().copied());
+                    if let Some(text_id) = text_id
+                        && let Some(text_data) = doc.nodes[text_id].text_data_mut()
+                    {
+                        text_data.content = text_content;
+                    }
                 }
                 _ => {}
             }
@@ -965,5 +971,25 @@ mod tests {
             .unwrap()
             .checkbox_input_checked();
         assert_eq!(checked, Some(true));
+    }
+
+    #[cfg(feature = "file-input")]
+    #[test]
+    fn click_on_an_input_that_became_a_file_input() {
+        // The input gets its button and label only when it is a file input as it is
+        // inserted, so this one has no children
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let root_id = doc.root_node().id;
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let input = mutator.create_element(qual_name!("input", html), vec![]);
+        mutator.append_children(html, &[input]);
+        mutator.append_children(root_id, &[html]);
+        mutator.set_attribute(input, qual_name!("type"), "file");
+        drop(mutator);
+        doc.resolve(0.0);
+
+        click(&mut doc, input);
+        assert!(doc.nodes[input].children.is_empty());
     }
 }

@@ -626,11 +626,14 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     }
 }
 
+/// Run the default action of a click on `target`. `from_label` is set when a label
+/// forwards the click to its labeled control.
 pub(crate) fn handle_click(
     doc: &mut BaseDocument,
     target: NodeId,
     event: &BlitzPointerEvent,
     dispatch_event: &mut dyn FnMut(DomEvent),
+    from_label: bool,
 ) {
     let double_click_event = event.clone();
 
@@ -759,15 +762,21 @@ pub(crate) fn handle_click(
                         }
                     }
                 }
-                // Clicking labels triggers click, and possibly input event, of associated input
+                // Clicking a label runs the click action of its labeled control (HTML
+                // §4.10.4), except for a click on the control or inside it, whose own action
+                // has run, and for a click a label forwarded: the control may be inside
+                // another label that leads back to this one.
                 local_name!("label") => {
-                    if let Some(target_node_id) =
-                        doc.label_bound_input_element(node_id).map(|n| n.id)
+                    if let Some(control_id) = doc.label_bound_input_element(node_id).map(|n| n.id)
                     {
-                        // Apply default click event action for target node
-                        let target_node = doc.get_node_mut(target_node_id).unwrap();
-                        let syn_event = target_node.synthetic_click_event_data(event.mods);
-                        handle_click(doc, target_node_id, &syn_event, dispatch_event);
+                        if !from_label
+                            && control_id != target
+                            && !doc.is_ancestor_of(control_id, target)
+                        {
+                            let syn_event =
+                                doc.nodes[control_id].synthetic_click_event_data(event.mods);
+                            handle_click(doc, control_id, &syn_event, dispatch_event, true);
+                        }
                         break 'matched true;
                     }
                 }
@@ -884,5 +893,77 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     );
     if has_changed {
         doc.shell_provider.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Attribute, DocumentConfig, qual_name};
+
+    fn click(doc: &mut BaseDocument, target: NodeId) {
+        let event = doc.nodes[target].synthetic_click_event_data(Modifiers::empty());
+        handle_click(doc, target, &event, &mut |_| {}, false);
+    }
+
+    #[test]
+    fn label_clicks_reach_their_control_once() {
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let root_id = doc.root_node().id;
+        let attr = |name, value: &str| Attribute {
+            name,
+            value: value.to_string(),
+        };
+
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        // A control with no click action inside its label
+        let button_label = mutator.create_element(qual_name!("label", html), vec![]);
+        let button = mutator.create_element(
+            qual_name!("input", html),
+            vec![attr(qual_name!("type"), "button")],
+        );
+        mutator.append_children(button_label, &[button]);
+        // Two labels, each holding the control of the other
+        let label_a = mutator.create_element(
+            qual_name!("label", html),
+            vec![attr(qual_name!("for"), "a")],
+        );
+        let label_b = mutator.create_element(
+            qual_name!("label", html),
+            vec![attr(qual_name!("for"), "b")],
+        );
+        let input_a = mutator.create_element(
+            qual_name!("input", html),
+            vec![attr(qual_name!("id"), "a"), attr(qual_name!("type"), "button")],
+        );
+        let input_b = mutator.create_element(
+            qual_name!("input", html),
+            vec![attr(qual_name!("id"), "b"), attr(qual_name!("type"), "button")],
+        );
+        mutator.append_children(label_a, &[input_b]);
+        mutator.append_children(label_b, &[input_a]);
+        // A checkbox inside its label
+        let checkbox_label = mutator.create_element(qual_name!("label", html), vec![]);
+        let checkbox = mutator.create_element(
+            qual_name!("input", html),
+            vec![attr(qual_name!("type"), "checkbox")],
+        );
+        mutator.append_children(checkbox_label, &[checkbox]);
+        mutator.append_children(html, &[button_label, label_a, label_b, checkbox_label]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        doc.resolve(0.0);
+
+        for target in [button_label, button, label_a, input_a, label_b, input_b] {
+            click(&mut doc, target);
+        }
+
+        click(&mut doc, checkbox_label);
+        let checked = doc.nodes[checkbox]
+            .element_data()
+            .unwrap()
+            .checkbox_input_checked();
+        assert_eq!(checked, Some(true));
     }
 }

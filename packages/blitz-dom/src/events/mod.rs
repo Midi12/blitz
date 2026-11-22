@@ -212,7 +212,7 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
             // Do nothing (active state is reset in the event driver)
         }
         DomEventData::Click(event) => {
-            handle_click(doc, target_node_id, event, &mut dispatch_event);
+            handle_click(doc, target_node_id, event, &mut dispatch_event, false);
         }
         DomEventData::KeyDown(event) => {
             handle_key_or_input_event(

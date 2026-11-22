@@ -1526,11 +1526,11 @@ impl Node {
                     child_x += content_box_offset.x;
                     child_y += content_box_offset.y;
                 }
-                // Fixed-position children of the root element are positioned
-                // against the viewport and do not scroll with it. (A fixed box
-                // whose containing block is a transformed ancestor scrolls with
-                // that ancestor like any other out-of-flow box.)
-                if child_position == taffy::Position::Fixed && self.containing_block().is_none() {
+                // A fixed box positioned against the viewport does not scroll
+                // with it. (A fixed box whose containing block is a transformed
+                // ancestor scrolls with that ancestor like any other out-of-flow
+                // box.)
+                if child.is_fixed_to_viewport() {
                     child_x -= self.scroll_offset().x as f32;
                     child_y -= self.scroll_offset().y as f32;
                     let viewport_scroll = self.tree().viewport_scroll();
@@ -1679,6 +1679,25 @@ impl Node {
         self.oof_containing_block
             .get()
             .or_else(|| self.layout_parent.get())
+    }
+
+    /// Whether this is a `position: fixed` box whose containing block is the viewport (CSS
+    /// Positioned Layout 3 §2.1): no ancestor has a transform, perspective or filter, so Taffy
+    /// positions it against the initial containing block, in the box of the root element. The
+    /// viewport's scroll moves the root element's box, but must not move this box.
+    pub fn is_fixed_to_viewport(&self) -> bool {
+        let tree = self.tree();
+        // The root element is the element whose parent is the document node.
+        let is_root_element = |node: &Node| {
+            node.parent
+                .and_then(|id| tree.get(id))
+                .is_some_and(|parent| parent.parent.is_none())
+        };
+        self.taffy_position() == taffy::Position::Fixed
+            && self
+                .containing_block()
+                .and_then(|id| tree.get(id))
+                .is_some_and(is_root_element)
     }
 
     /// Computes the Document-relative coordinates of the `Node`

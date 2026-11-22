@@ -652,16 +652,28 @@ fn fixed_boxes_scroll_only_with_a_non_viewport_containing_block() {
             "z-index fixed scrolled with its CB ({incremental})"
         );
 
+        // `hit` takes document coordinates: the viewport's top is now at y = 30,
+        // so the fixed boxes drawn at y 50..70 in the viewport are at y 80..100.
         doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: 30.0 });
         assert_eq!(
-            hit(&doc, 20.0, 60.0),
+            hit(&doc, 20.0, 90.0),
             g0,
             "z-auto fixed under viewport scroll ({incremental})"
         );
         assert_eq!(
-            hit(&doc, 60.0, 60.0),
+            hit(&doc, 60.0, 90.0),
             g1,
             "z-index fixed under viewport scroll ({incremental})"
+        );
+        assert_eq!(
+            hit(&doc, 20.0, 60.0),
+            tall,
+            "z-auto fixed did not scroll with the viewport ({incremental})"
+        );
+        assert_eq!(
+            hit(&doc, 60.0, 60.0),
+            tall,
+            "z-index fixed did not scroll with the viewport ({incremental})"
         );
     }
 }

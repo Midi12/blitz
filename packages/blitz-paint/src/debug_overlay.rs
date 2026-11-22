@@ -58,13 +58,12 @@ pub(crate) fn render_debug_overlay(
 
     let mut abs_x = x;
     let mut abs_y = y;
-    // A fixed box whose containing block is the root element does not scroll
-    // with it (nor with the viewport).
+    // A fixed box whose containing block is the viewport does not scroll with
+    // the root element (nor with the viewport).
     let mut fixed_to_viewport = false;
     while let Some(parent_id) = node.containing_block() {
-        let child_is_fixed = node.taffy_position() == taffy::Position::Fixed;
+        fixed_to_viewport |= node.is_fixed_to_viewport();
         node = &dom.as_ref().tree()[parent_id];
-        fixed_to_viewport = child_is_fixed && node.containing_block().is_none();
         let taffy::Point { x, y } = node.final_layout().location;
         abs_x += x;
         abs_y += y;

@@ -56,9 +56,10 @@ impl BaseDocument {
                 })
             });
 
-        if let Some(final_owner_id) = final_owner_id {
-            self.controls_to_form.insert(node_id, final_owner_id);
-        }
+        match final_owner_id {
+            Some(final_owner_id) => self.controls_to_form.insert(node_id, final_owner_id),
+            None => self.controls_to_form.remove(&node_id),
+        };
     }
 
     /// Submits a form with the given form node ID and submitter node ID

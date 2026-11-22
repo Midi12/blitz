@@ -1032,6 +1032,16 @@ impl<'doc> DocumentMutator<'doc> {
                 doc.remove_from_id_map(&id_attr, node_id);
             }
 
+            // A control that leaves the document leaves its form owner, and so do
+            // the controls (associated through `form=`) of a form that leaves it.
+            doc.controls_to_form.remove(&node_id);
+            if doc.nodes[node_id]
+                .data
+                .is_element_with_tag_name(&local_name!("form"))
+            {
+                doc.controls_to_form.retain(|_, form_id| *form_id != node_id);
+            }
+
             let node = &mut doc.nodes[node_id];
             let NodeData::Element(ref mut element) = node.data else {
                 return;
@@ -1395,6 +1405,36 @@ mod test {
         drop(mutator);
 
         document.resolve(0.0);
+    }
+
+    #[test]
+    fn removed_controls_and_forms_leave_form_ownership() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+        let mut mutator = document.mutate();
+        let form = mutator.create_element(qual_name!("form", html), vec![]);
+        let inner = mutator.create_element(qual_name!("input", html), vec![]);
+        let outer = mutator.create_element(
+            qual_name!("input", html),
+            vec![
+                Attribute {
+                    name: qual_name!("form"),
+                    value: "f".to_string(),
+                },
+            ],
+        );
+        mutator.set_attribute(form, qual_name!("id"), "f");
+        mutator.append_children(form, &[inner]);
+        mutator.append_children(root_id, &[form, outer]);
+        drop(mutator);
+        assert_eq!(document.controls_to_form.get(&inner), Some(&form));
+        assert_eq!(document.controls_to_form.get(&outer), Some(&form));
+
+        document.mutate().remove_and_drop_node(inner);
+        assert_eq!(document.controls_to_form.get(&inner), None);
+
+        document.mutate().remove_and_drop_node(form);
+        assert!(document.controls_to_form.is_empty());
     }
 
     #[test]

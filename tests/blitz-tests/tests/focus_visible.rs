@@ -18,6 +18,7 @@ use std::sync::Arc;
 const HTML: &str = r#"<html><body style="margin:0">
     <details><summary id="summary" style="height:20px">Summary</summary></details>
     <input id="input" type="text" style="display:block;height:20px;margin:0;border:0;padding:0">
+    <button id="button" style="display:block;height:20px;margin:0;border:0;padding:0"><span>Go</span></button>
 </body></html>"#;
 
 fn make_doc() -> HtmlDocument {
@@ -99,4 +100,13 @@ fn pointer_focus_is_not_visible_until_a_key_is_pressed() {
 
     doc.handle_ui_event(key_down(Key::Named(NamedKey::Shift), Code::ShiftLeft));
     assert!(matches(&doc, "#summary:focus-visible"));
+}
+
+#[test]
+fn pointer_press_focuses_the_focusable_ancestor() {
+    let mut doc = make_doc();
+    // Inside the button, on it or on its <span>
+    click(&mut doc, 5.0, 50.0);
+    assert!(matches(&doc, "#button:focus"));
+    assert!(!matches(&doc, "#button:focus-visible"));
 }

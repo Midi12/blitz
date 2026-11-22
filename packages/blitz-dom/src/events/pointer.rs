@@ -505,6 +505,21 @@ pub(crate) fn handle_pointerdown(
             } else {
                 doc.clear_text_selection();
             }
+
+            // A press focuses the focusable element it lands in: a button, a
+            // link, an element with a `tabindex`.
+            let focus_target =
+                std::iter::successors(Some(actual_target), |&id| doc.nodes[id].parent)
+                    .find(|&id| doc.nodes[id].is_focussable());
+            if let Some(focus_target) = focus_target {
+                generate_focus_events(
+                    doc,
+                    &mut |doc| {
+                        doc.set_focus_to(focus_target);
+                    },
+                    dispatch_event,
+                );
+            }
         }
         ClickTarget::TextInput {
             content_box_offset,

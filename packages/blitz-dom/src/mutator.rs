@@ -349,6 +349,16 @@ impl DocumentMutator<'_> {
             element.flush_open_state();
         }
 
+        // The checkedness of a checkbox or radio input is state of the element, which
+        // follows `type` and `checked` whether or not it is in the document
+        if element.name.local == local_name!("input") {
+            if name.local == local_name!("type") {
+                element.flush_checkbox_state();
+            } else if name.local == local_name!("checked") {
+                set_input_checked_state(element, true);
+            }
+        }
+
         let tag = &element.name.local;
         let attr = &name.local;
 
@@ -399,9 +409,7 @@ impl DocumentMutator<'_> {
             return;
         }
 
-        if (tag, attr) == tag_and_attr!("input", "checked") {
-            set_input_checked_state(element, true);
-        } else if (tag, attr) == tag_and_attr!("img", "src") {
+        if (tag, attr) == tag_and_attr!("img", "src") {
             self.load_image(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.load_custom_paint_src(node_id);
@@ -486,6 +494,11 @@ impl DocumentMutator<'_> {
             return;
         }
         self.mutations_occurred |= node_is_in_document;
+
+        // An input without `type` is a text field: it loses any checkedness state
+        if (&element.name.local, &name.local) == tag_and_attr!("input", "type") {
+            element.flush_checkbox_state();
+        }
 
         // If element is a CustomWidget, then call attribute_changed on it
         #[cfg(feature = "custom-widget")]

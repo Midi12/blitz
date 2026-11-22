@@ -442,17 +442,7 @@ impl ElementData {
         data.flush_is_focussable();
         data.flush_link_state();
 
-        // Mirror the `checked` attribute into the element state so that `:checked`
-        // selectors can be matched (and invalidated) from `ElementState`.
-        if data.name.local == local_name!("input")
-            && matches!(
-                data.attr(local_name!("type")),
-                Some("checkbox") | Some("radio")
-            )
-            && data.has_attr(local_name!("checked"))
-        {
-            data.element_state.insert(ElementState::CHECKED);
-        }
+        data.flush_checkbox_state();
 
         // An option's selectedness starts as the presence of its `selected` attribute
         // (HTML §4.10.10); it is kept in the `CHECKED` state, which `:checked` matches.
@@ -635,6 +625,27 @@ impl ElementData {
             *is_checked = checked;
         }
         self.element_state.set(ElementState::CHECKED, checked);
+    }
+
+    /// Keep the checkedness state of an `input` in step with its `type`: a checkbox or
+    /// radio button gets it, from the presence of its `checked` attribute, as soon as it is
+    /// one, so that `:checked` matches from its first style; an input that stops being one
+    /// loses it.
+    pub fn flush_checkbox_state(&mut self) {
+        let is_checkable = self.name.local == local_name!("input")
+            && matches!(self.attr(local_name!("type")), Some("checkbox" | "radio"));
+        match (is_checkable, self.checkbox_input_checked().is_some()) {
+            (true, false) => {
+                let checked = self.has_attr(local_name!("checked"));
+                self.special_data = SpecialElementData::CheckboxInput(checked);
+                self.set_checkbox_input_checked(checked);
+            }
+            (false, true) => {
+                self.special_data = SpecialElementData::None;
+                self.element_state.remove(ElementState::CHECKED);
+            }
+            _ => {}
+        }
     }
 
     #[cfg(feature = "file-input")]

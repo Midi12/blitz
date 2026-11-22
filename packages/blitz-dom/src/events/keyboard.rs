@@ -66,6 +66,18 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
             return;
         }
 
+        if doc.nodes[node_id]
+            .data
+            .is_element_with_tag_name(&local_name!("select"))
+        {
+            if let KeyboardOrTextInputEvent::KeyPress(key_event) = &event
+                && key_event.state.is_pressed()
+            {
+                doc.handle_select_key(node_id, &key_event.key, &mut dispatch_event);
+            }
+            return;
+        }
+
         let node = &mut doc.nodes[node_id];
         let Some(element_data) = node.element_data_mut() else {
             return;

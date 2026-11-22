@@ -55,6 +55,9 @@ pub struct DocumentMutator<'doc> {
     title_node: Option<NodeId>,
     style_nodes: HashSet<NodeId>,
     form_nodes: HashSet<NodeId>,
+    /// Select elements whose list of options changed: they run the selectedness setting
+    /// algorithm when mutations are flushed
+    select_nodes: HashSet<NodeId>,
 
     /// Whether an element/attribute that affect animation status has been seen
     recompute_is_animating: bool,
@@ -84,6 +87,7 @@ impl DocumentMutator<'_> {
             title_node: None,
             style_nodes: HashSet::new(),
             form_nodes: HashSet::new(),
+            select_nodes: HashSet::new(),
             recompute_is_animating: false,
             mutations_occurred: false,
             #[cfg(feature = "autofocus")]
@@ -353,7 +357,10 @@ impl DocumentMutator<'_> {
         }
 
         if *attr == local_name!("value") {
-            if let Some(input_data) = element.text_input_data_mut() {
+            if *tag == local_name!("select") {
+                // As for a text input, the attribute sets the select's current value
+                self.doc.set_select_value(node_id, value);
+            } else if let Some(input_data) = element.text_input_data_mut() {
                 // Update text input value
                 input_data.set_text(
                     &mut self.doc.font_ctx.lock().unwrap(),
@@ -361,6 +368,11 @@ impl DocumentMutator<'_> {
                     value,
                 );
             }
+            return;
+        }
+
+        if (tag, attr) == tag_and_attr!("option", "selected") {
+            self.doc.option_selected_attribute_changed(node_id, true);
             return;
         }
 
@@ -429,6 +441,19 @@ impl DocumentMutator<'_> {
             {
                 self.doc.remove_from_id_map(&old_id, node_id);
             }
+        }
+
+        // As for `value` and `checked` below, `selected` sets an option's selectedness and
+        // `value` a select's value: removing either resets that state, present or not.
+        let tag = self.doc.nodes[node_id]
+            .element_data()
+            .map(|element| element.name.local.clone());
+        if tag == Some(local_name!("option")) && name.local == local_name!("selected") {
+            self.doc.option_selected_attribute_changed(node_id, false);
+            self.mutations_occurred |= node_is_in_document;
+        } else if tag == Some(local_name!("select")) && name.local == local_name!("value") {
+            self.doc.set_select_value(node_id, "");
+            self.mutations_occurred |= node_is_in_document;
         }
 
         let node = &mut self.doc.nodes[node_id];
@@ -947,6 +972,10 @@ impl<'doc> DocumentMutator<'doc> {
             self.doc.reset_form_owner(id);
         }
 
+        for id in self.select_nodes.drain() {
+            self.doc.reset_select(id);
+        }
+
         #[cfg(feature = "autofocus")]
         if let Some(node_id) = self.node_to_autofocus.take() {
             if self.doc.get_node(node_id).is_some() {
@@ -1140,6 +1169,19 @@ impl<'doc> DocumentMutator<'doc> {
             "title" => self.title_node = Some(node_id),
             "style" => {
                 self.style_nodes.insert(node_id);
+            }
+            // The children of a select, or of an optgroup in a select, make its list of options
+            "select" => {
+                self.select_nodes.insert(node_id);
+            }
+            "optgroup" => {
+                if let Some(parent_id) = self.doc.nodes[node_id].parent
+                    && self.doc.nodes[parent_id]
+                        .data
+                        .is_element_with_tag_name(&local_name!("select"))
+                {
+                    self.select_nodes.insert(parent_id);
+                }
             }
             _ => {}
         }

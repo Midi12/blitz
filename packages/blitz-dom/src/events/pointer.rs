@@ -657,6 +657,30 @@ pub(crate) fn handle_click(
             }
 
             match el.name.local {
+                // In the drop-down list of an open select, activating an option picks it and
+                // closes the list
+                local_name!("option") => {
+                    if let Some(select_id) = doc.option_select(node_id)
+                        && doc.select_is_open(select_id)
+                    {
+                        doc.pick_option(select_id, node_id, dispatch_event);
+                        doc.set_select_open(select_id, false);
+                        break 'matched true;
+                    }
+                }
+                // Activating a select focuses it and opens or closes its drop-down list
+                local_name!("select") => {
+                    let open = !doc.select_is_open(node_id);
+                    doc.set_select_open(node_id, open);
+                    generate_focus_events(
+                        doc,
+                        &mut |doc| {
+                            doc.set_focus_to(node_id);
+                        },
+                        dispatch_event,
+                    );
+                    break 'matched true;
+                }
                 local_name!("input") if el.attr(local_name!("type")) == Some("checkbox") => {
                     let mut is_checked = false;
                     doc.snapshot_node_and(node_id, ElementState::CHECKED, |node| {

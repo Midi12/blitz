@@ -457,6 +457,13 @@ fn collect_layout_children_with_wrap(
             }
         }
 
+        // A select's boxes are its options, which `compute_select_layout` lays out either
+        // in its box or as its drop-down list (HTML §15.5.16)
+        if tag_name == "select" {
+            out.children.extend(doc.select_options(container_node_id));
+            return;
+        }
+
         #[cfg(feature = "svg")]
         if matches!(tag_name, "svg") {
             let outer_html = doc.get_node(container_node_id).unwrap().svg_source();

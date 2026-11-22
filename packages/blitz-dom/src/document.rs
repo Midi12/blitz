@@ -1705,6 +1705,8 @@ impl BaseDocument {
     /// Clear the focussed node
     pub fn clear_focus(&mut self) {
         if let Some(id) = self.focus_node_id {
+            // A select's drop-down list closes when the select loses focus
+            self.set_select_open(id, false);
             let shell_provider = self.shell_provider.clone();
             self.snapshot_node_and(id, ElementState::FOCUS | ElementState::FOCUSRING, |node| {
                 node.blur(shell_provider)
@@ -1765,6 +1767,7 @@ impl BaseDocument {
 
         // Remove focus from the old node
         if let Some(id) = self.focus_node_id {
+            self.set_select_open(id, false);
             self.snapshot_node_and(id, ElementState::FOCUS | ElementState::FOCUSRING, |node| {
                 node.blur(shell_provider.clone())
             });

@@ -147,6 +147,47 @@ option {
     display: none;
 }
 
+/* https://html.spec.whatwg.org/#the-select-element-2: a drop-down box. Blitz lays
+ * it out itself (`compute_select_layout`) and paints the selected option's text in
+ * the box; the options are seen only in the drop-down list, drawn below the box
+ * inside the document while the select is open. */
+select {
+    display: inline-block;
+    border: 1px solid #999;
+    padding: 1px 20px 1px 0;
+    background-color: white;
+    white-space: nowrap;
+    text-align: start;
+    cursor: default;
+    user-select: none;
+}
+
+select:open {
+    position: relative;
+    z-index: 2147483647;
+}
+
+select > option,
+select > optgroup > option {
+    display: block;
+    padding: 0 4px;
+}
+
+select:not(:open) > option,
+select:not(:open) > optgroup > option {
+    visibility: hidden;
+}
+
+select:open > option,
+select:open > optgroup > option {
+    background-color: white;
+}
+
+select:open > option:checked,
+select:open > optgroup > option:checked {
+    background-color: #cce4ff;
+}
+
 picture {
     display: contents;
 }

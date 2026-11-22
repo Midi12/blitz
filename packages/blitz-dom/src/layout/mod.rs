@@ -13,6 +13,7 @@ use std::sync::Arc;
 use style::Atom;
 use style::values::computed::CSSPixelLength;
 use style::values::computed::length_percentage::CalcLengthPercentage;
+use style_dom::ElementState;
 use stylo_taffy::TaffyStyloStyle;
 use taffy::{
     AxisStaticEdge, AxisStaticPosition, BlockContext, CoreStyle as _, DetailedLayoutInfo,
@@ -240,6 +241,13 @@ impl LayoutPassState<'_> {
         });
         let font_size = font_styles.map(|s| s.0);
         let resolved_line_height = font_styles.map(|s| s.1);
+
+        if node.data.is_element_with_tag_name(&local_name!("select"))
+            && node.taffy_display() != Display::None
+        {
+            let line_height = resolved_line_height.unwrap_or(16.0);
+            return self.compute_select_layout(node_id, inputs, line_height);
+        }
 
         match &mut node.data {
             NodeData::Text(data) => {
@@ -603,6 +611,147 @@ impl LayoutPassState<'_> {
 
             _ => taffy::LayoutOutput::HIDDEN,
         }
+    }
+
+    /// The layout of a `select` element shown as a drop-down box (HTML §15.5.16). Its content
+    /// box is as wide as its widest option and as high as its tallest (one line without
+    /// options); blitz-paint draws the selected option's text in it. Its layout children are its
+    /// options: while it is closed they are stacked in its content box, where the UA style sheet
+    /// hides them; while it is open (`:open`) they are laid out one below the other under its
+    /// border box, as wide as it, as its drop-down list.
+    fn compute_select_layout(
+        &mut self,
+        node_id: NodeId,
+        inputs: taffy::LayoutInput,
+        line_height: f32,
+    ) -> taffy::LayoutOutput {
+        let count = self.child_count(node_id);
+        let mut content_size = taffy::Size::ZERO;
+        for index in 0..count {
+            let option_id = self.get_child_id(node_id, index);
+            let size = self
+                .compute_child_layout(
+                    option_id,
+                    taffy::LayoutInput {
+                        run_mode: RunMode::ComputeSize,
+                        sizing_mode: taffy::SizingMode::InherentSize,
+                        axis: taffy::RequestedAxis::Both,
+                        known_dimensions: taffy::Size::NONE,
+                        known_dimensions_are_definite: taffy::Size {
+                            width: true,
+                            height: true,
+                        },
+                        parent_size: taffy::Size::NONE,
+                        available_space: taffy::Size {
+                            width: AvailableSpace::MaxContent,
+                            height: AvailableSpace::MaxContent,
+                        },
+                        vertical_margins_are_collapsible: taffy::Line::FALSE,
+                    },
+                )
+                .size;
+            content_size.width = content_size.width.max(size.width);
+            content_size.height = content_size.height.max(size.height);
+        }
+        if count == 0 {
+            content_size.height = line_height;
+        }
+
+        let dom_id = dom_node_id(node_id);
+        let output = compute_leaf_layout(
+            inputs,
+            &self.nodes[dom_id].layout_style(),
+            resolve_calc_value,
+            |_known_size, _available_space| content_size,
+        );
+        if inputs.run_mode != RunMode::PerformLayout {
+            return output;
+        }
+
+        let (padding, border, open) = {
+            let node = &self.nodes[dom_id];
+            let style = node.layout_style();
+            let parent_width = inputs.parent_size.width;
+            (
+                style
+                    .padding()
+                    .resolve_or_zero(parent_width, resolve_calc_value),
+                style
+                    .border()
+                    .resolve_or_zero(parent_width, resolve_calc_value),
+                node.element_data()
+                    .is_some_and(|el| el.element_state.contains(ElementState::OPEN)),
+            )
+        };
+        let content_width = (output.size.width
+            - padding.horizontal_axis_sum()
+            - border.horizontal_axis_sum())
+        .max(0.0);
+        let (x, mut y, row_width) = if open {
+            (0.0, output.size.height, output.size.width)
+        } else {
+            (
+                border.left + padding.left,
+                border.top + padding.top,
+                content_width,
+            )
+        };
+        for index in 0..count {
+            let option_id = self.get_child_id(node_id, index);
+            let option_output = self.compute_child_layout(
+                option_id,
+                taffy::LayoutInput {
+                    run_mode: RunMode::PerformLayout,
+                    sizing_mode: taffy::SizingMode::InherentSize,
+                    axis: taffy::RequestedAxis::Both,
+                    known_dimensions: taffy::Size {
+                        width: Some(row_width),
+                        height: None,
+                    },
+                    known_dimensions_are_definite: taffy::Size {
+                        width: true,
+                        height: true,
+                    },
+                    parent_size: taffy::Size {
+                        width: Some(content_width),
+                        height: None,
+                    },
+                    available_space: taffy::Size {
+                        width: AvailableSpace::Definite(row_width),
+                        height: AvailableSpace::MaxContent,
+                    },
+                    vertical_margins_are_collapsible: taffy::Line::FALSE,
+                },
+            );
+            let (option_padding, option_border) = {
+                let style = self.nodes[dom_node_id(option_id)].layout_style();
+                (
+                    style
+                        .padding()
+                        .resolve_or_zero(Some(content_width), resolve_calc_value),
+                    style
+                        .border()
+                        .resolve_or_zero(Some(content_width), resolve_calc_value),
+                )
+            };
+            self.set_unrounded_layout(
+                option_id,
+                &taffy::Layout {
+                    order: index as u32,
+                    location: taffy::Point { x, y },
+                    size: option_output.size,
+                    scrollable_overflow_rect: option_output.scrollable_overflow_rect,
+                    scrollbar_size: taffy::Size::ZERO,
+                    border: option_border,
+                    padding: option_padding,
+                    margin: taffy::Rect::ZERO,
+                },
+            );
+            if open {
+                y += option_output.size.height;
+            }
+        }
+        output
     }
 }
 

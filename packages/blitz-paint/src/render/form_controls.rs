@@ -43,6 +43,60 @@ impl ElementCx<'_, '_> {
             _ => {}
         }
     }
+
+    /// A select's drop-down arrow, in its inline-end padding, and the text of its selected
+    /// option in its content box (`pos`). The text is that option's own text layout, which
+    /// blitz-dom's `compute_select_layout` sizes to the box.
+    pub(super) fn draw_select(&self, scene: &mut impl PaintScene, pos: Point) {
+        if self.node.local_name() != "select" {
+            return;
+        }
+
+        let padding_box = self.frame.padding_box;
+        let center = Point::new(
+            padding_box.x1 - self.frame.padding_width.x1 / 2.0,
+            padding_box.center().y,
+        );
+        let half_width = 4.0 * self.scale;
+        let mut arrow = BezPath::new();
+        arrow.move_to((center.x - half_width, center.y - half_width / 2.0));
+        arrow.line_to((center.x + half_width, center.y - half_width / 2.0));
+        arrow.line_to((center.x, center.y + half_width / 2.0));
+        arrow.close_path();
+        let color = self.style.clone_color().as_srgb_color();
+        scene.fill(Fill::NonZero, self.transform, color, None, &arrow);
+
+        let dom = self.context.dom;
+        let Some(option) = dom
+            .selected_option(self.node.id)
+            .and_then(|id| dom.get_node(id))
+            .filter(|option| option.flags.is_inline_root())
+        else {
+            return;
+        };
+        let Some(text_layout) = option
+            .element_data()
+            .and_then(|el| el.inline_layout_data.as_deref())
+        else {
+            return;
+        };
+        let layout = option.final_layout();
+        let pos = Point {
+            x: pos.x + f64::from(layout.padding.left + layout.border.left),
+            y: pos.y + f64::from(layout.padding.top + layout.border.top + text_layout.block_offset),
+        };
+        let transform = self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
+        let mut draw_text_context = self.context.draw_text_context.borrow_mut();
+        crate::text::stroke_text(
+            scene,
+            text_layout.layout.lines(),
+            dom,
+            transform,
+            self.scale,
+            option.id,
+            &mut draw_text_context,
+        );
+    }
 }
 
 fn draw_checkbox(

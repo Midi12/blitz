@@ -572,6 +572,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                                 cx.draw_custom_widget(scene);
                                 cx.draw_sub_document(scene);
                                 cx.draw_input(scene);
+                                cx.draw_select(scene, content_position);
                                 cx.draw_text_input_text(scene, content_position);
                                 cx.draw_inline_layout(scene, content_position);
                                 cx.draw_marker(scene, content_position);

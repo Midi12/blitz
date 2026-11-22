@@ -24,7 +24,7 @@ use taffy::{
     DetailedGridInfo, LayoutPartialTree as _, ResolveOrZero, TrackSizingFunction, style_helpers,
 };
 
-use crate::BaseDocument;
+use crate::{BaseDocument, Node};
 use crate::layout::LayoutPassState;
 
 use super::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
@@ -45,7 +45,16 @@ pub struct TableContext {
     pub oof_children: Vec<(NodeId, taffy::Position)>,
     pub rows: Vec<TableRow>,
     pub columns: Vec<TableColumn>,
+    /// Grid track positions from the last layout, relative to the element's border box (whose
+    /// top holds the captions above the table box, see `caption_space`).
     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
+    /// The table's caption boxes, in tree order. They take no part in the table grid: they
+    /// are laid out in the table wrapper box, above or below the table box (CSS 2.2 §17.4).
+    pub captions: Vec<NodeId>,
+    /// The height taken by the captions above (`start`) and below (`end`) the table box at
+    /// the last layout. The element's box is the table wrapper box: its table box (which has
+    /// the table's border and background) is the element's box less these.
+    pub caption_space: AtomicRefCell<taffy::Line<f32>>,
     pub border_style: Option<ServoArc<Border>>,
     pub border_collapse: BorderCollapse,
     /// Backing storage for `calc()` track sizes synthesised by the table layout code.
@@ -268,9 +277,15 @@ pub(crate) fn build_table_context(
             _ => 1,
         }
     };
+    // Caption boxes are laid out in the table wrapper box, outside the grid
+    let captions: Vec<NodeId> = children
+        .iter()
+        .copied()
+        .filter(|&child_id| is_table_caption(&doc.nodes[child_id]))
+        .collect();
     for order in 0..3 {
         for child_id in children.iter().copied() {
-            if row_group_order(doc, child_id) != order {
+            if row_group_order(doc, child_id) != order || captions.contains(&child_id) {
                 continue;
             }
             collect_table_cells(
@@ -414,6 +429,7 @@ pub(crate) fn build_table_context(
         .iter()
         .map(|cell| cell.node_id)
         .chain(oof_children.iter().map(|(node_id, _)| *node_id))
+        .chain(captions.iter().copied())
         .collect();
     let root_node = &mut doc.nodes[table_root_node_id];
     root_node.children = children;
@@ -426,12 +442,29 @@ pub(crate) fn build_table_context(
             rows,
             columns,
             computed_grid_info: AtomicRefCell::new(None),
+            captions,
+            caption_space: AtomicRefCell::new(taffy::Line {
+                start: 0.0,
+                end: 0.0,
+            }),
             border_collapse,
             border_style: first_cell_border,
             calc_values,
         },
         layout_children,
     )
+}
+
+/// Whether a child of a table generates one of its caption boxes: an in-flow
+/// `display: table-caption` element (CSS 2.2 §17.4).
+fn is_table_caption(node: &Node) -> bool {
+    node.is_element()
+        && node
+            .display_style()
+            .is_some_and(|display| display.outside() == DisplayOutside::TableCaption)
+        && !node
+            .primary_styles()
+            .is_some_and(|style| style.clone_position().is_absolutely_positioned())
 }
 
 /// Collect `<col>` elements (and `display: table-column` elements) along with their
@@ -740,7 +773,7 @@ fn collect_table_cells(
         | DisplayInside::Flex
         | DisplayInside::Grid => {
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-            // Probably a table caption: ignore
+            // Not a table part (captions are collected by `build_table_context`): ignore
             // println!(
             //     "Warning: ignoring non-table typed descendent of table ({:?})",
             //     display.inside()

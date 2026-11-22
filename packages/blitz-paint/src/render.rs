@@ -20,8 +20,8 @@ use crate::text::DrawTextContext;
 use crate::{CustomWidgetSceneMap, SELECTION_COLOR};
 use anyrender::{PaintScene, Scene};
 use blitz_dom::node::{
-    ListItemLayout, ListItemLayoutPosition, Marker, NodeData, RasterImageData, TextInputData,
-    TextNodeData,
+    ListItemLayout, ListItemLayoutPosition, Marker, NodeData, RasterImageData, SpecialElementData,
+    TextInputData, TextNodeData,
 };
 use blitz_dom::{BaseDocument, ElementData, Node, NodeId, local_name};
 use blitz_traits::devtools::DevtoolSettings;
@@ -627,7 +627,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
     fn element_cx(
         &'dom self,
         node: &'dom Node,
-        layout: Layout,
+        mut layout: Layout,
         transform: Affine,
         custom_widget_scene: Option<&'a Scene>,
     ) -> ElementCx<'dom, 'a> {
@@ -641,13 +641,22 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             });
 
         let scale = self.scale;
+        let element = node.element_data().unwrap();
+
+        // A table's box is its table wrapper box. Its border, background and outline belong
+        // to the table box inside it, which its captions leave above and below (CSS 2.2 §17.4).
+        // The layout is rounded to whole pixels, so are the caption heights.
+        let mut top = 0.0;
+        if let SpecialElementData::TableRoot(table) = &element.special_data {
+            let captions = *table.caption_space.borrow();
+            top = captions.start.round();
+            layout.size.height = (layout.size.height - top - captions.end.round()).max(0.0);
+        }
 
         // todo: maybe cache this so we don't need to constantly be figuring it out
         // It is quite a bit of math to calculate during render/traverse
         // Also! we can cache the bezpaths themselves, saving us a bunch of work
-        let frame = create_css_rect(&style, &layout, scale);
-
-        let element = node.element_data().unwrap();
+        let frame = create_css_rect(&style, &layout, top, scale);
 
         ElementCx {
             context: self,
@@ -1333,13 +1342,15 @@ fn insets_from_taffy_rect(input: taffy::Rect<f64>) -> Insets {
     }
 }
 
-/// Convert Stylo and Taffy types into Kurbo types
-fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBox {
+/// Convert Stylo and Taffy types into Kurbo types: the boxes of an element whose border box
+/// is `layout.size`, `top` CSS pixels below the element's origin.
+fn create_css_rect(style: &ComputedValues, layout: &Layout, top: f32, scale: f64) -> CssBox {
     // Resolve and rescale
     // We have to scale since document pixels are not same same as rendered pixels
     let width: f64 = layout.size.width as f64;
     let height: f64 = layout.size.height as f64;
-    let border_box = Rect::new(0.0, 0.0, width * scale, height * scale);
+    let top = top as f64;
+    let border_box = Rect::new(0.0, top * scale, width * scale, (top + height) * scale);
     let border = insets_from_taffy_rect(layout.border.map(|p| p as f64 * scale));
     let padding = insets_from_taffy_rect(layout.padding.map(|p| p as f64 * scale));
     let outline_width = style.get_outline().outline_width.0.to_f64_px() * scale;

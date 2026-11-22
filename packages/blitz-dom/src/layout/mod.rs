@@ -38,7 +38,7 @@ pub(crate) mod writing_mode;
 use self::replaced::{
     IntrinsicSizes, ReplacedContext, compute_replaced_layout, is_replaced_element,
 };
-use self::table::TableTreeWrapper;
+use self::table::{TableContext, TableTreeWrapper};
 
 /// The default object size for replaced elements
 /// (https://drafts.csswg.org/css-images/#default-object-size).
@@ -540,15 +540,102 @@ impl LayoutPassState<'_> {
                     };
                     let context = Arc::clone(context);
 
+                    // The element's box is the table wrapper box, which holds the table box and
+                    // the caption boxes (CSS 2.2 §17.4). A known height is that of the wrapper:
+                    // the table box gets what the captions leave of it.
+                    let mut grid_inputs = inputs;
+                    if let Some(height) = inputs.known_dimensions.height
+                        && !context.captions.is_empty()
+                    {
+                        let width = match inputs.known_dimensions.width {
+                            Some(width) => width,
+                            None => {
+                                let mut table_wrapper = TableTreeWrapper {
+                                    doc: &mut *self,
+                                    ctx: Arc::clone(&context),
+                                };
+                                let size_inputs = taffy::LayoutInput {
+                                    run_mode: RunMode::ComputeSize,
+                                    axis: taffy::RequestedAxis::Horizontal,
+                                    known_dimensions: taffy::Size::NONE,
+                                    ..inputs
+                                };
+                                compute_grid_layout(&mut table_wrapper, node_id, size_inputs)
+                                    .size
+                                    .width
+                            }
+                        };
+                        let captions = self.layout_table_captions(
+                            &context,
+                            width,
+                            None,
+                            &mut taffy::OofCandidates::new(),
+                        );
+                        grid_inputs.known_dimensions.height =
+                            Some((height - captions.start - captions.end).max(0.0));
+                    }
+
                     let mut table_wrapper = TableTreeWrapper {
-                        doc: self,
+                        doc: &mut *self,
                         ctx: context,
                     };
-                    let mut output = compute_grid_layout(&mut table_wrapper, node_id, inputs);
+                    let mut output = compute_grid_layout(&mut table_wrapper, node_id, grid_inputs);
+                    let context = table_wrapper.ctx;
+
+                    // The caption boxes take no part in the grid: they sit above and below the
+                    // table box, which moves down by the height of those above it. The grid's
+                    // own rows, cells and their indexes are left as they are.
+                    let mut caption_candidates = taffy::OofCandidates::new();
+                    let captions = if context.captions.is_empty()
+                        || inputs.run_mode == RunMode::PerformHiddenLayout
+                        || (inputs.run_mode == RunMode::ComputeSize
+                            && inputs.axis == taffy::RequestedAxis::Horizontal)
+                    {
+                        taffy::Line {
+                            start: 0.0,
+                            end: 0.0,
+                        }
+                    } else {
+                        let table_height = (inputs.run_mode == RunMode::PerformLayout)
+                            .then_some(output.size.height);
+                        self.layout_table_captions(
+                            &context,
+                            output.size.width,
+                            table_height,
+                            &mut caption_candidates,
+                        )
+                    };
+                    if inputs.run_mode == RunMode::PerformLayout {
+                        *context.caption_space.borrow_mut() = captions;
+                        if captions.start != 0.0 {
+                            for cell in &context.cells {
+                                self.nodes[cell.node_id].unrounded_layout_mut().location.y +=
+                                    captions.start;
+                            }
+                            if let Some(grid_info) = &mut *context.computed_grid_info.borrow_mut() {
+                                for track in &mut grid_info.rows.positions {
+                                    track.start += captions.start;
+                                    track.end += captions.start;
+                                }
+                                if let Some(line) = &mut grid_info.rows.empty_axis_line {
+                                    *line += captions.start;
+                                }
+                            }
+                            output.oof_candidates.translate(taffy::Point {
+                                x: 0.0,
+                                y: captions.start,
+                            });
+                            if let Some(area) = &mut output.oof_positioning_area {
+                                area.offset.y += captions.start;
+                            }
+                        }
+                    }
+                    output.size.height += captions.start + captions.end;
+                    output.baselines.first = output.baselines.first.map(|y| y + captions.start);
+                    output.baselines.last = output.baselines.last.map(|y| y + captions.start);
 
                     // Absolutely positioned children take no part in the table grid. Their
-                    // static position is the top-left of the table's content box.
-                    let context = table_wrapper.ctx;
+                    // static position is the top-left of the table box's content box.
                     if inputs.run_mode == RunMode::PerformLayout && !context.oof_children.is_empty()
                     {
                         let style = &context.style;
@@ -561,7 +648,7 @@ impl LayoutPassState<'_> {
                             .resolve_or_zero(parent_width, resolve_calc_value);
                         let static_position = taffy::Point {
                             x: padding.left + border.left,
-                            y: padding.top + border.top,
+                            y: captions.start + padding.top + border.top,
                         }
                         .map(|pos| AxisStaticPosition::from_edge(pos, AxisStaticEdge::Start));
                         let in_flow_count = context.cells.len();
@@ -574,6 +661,7 @@ impl LayoutPassState<'_> {
                             });
                         }
                     }
+                    output.oof_candidates.append(&mut caption_candidates);
 
                     // HACK: Cap scrollable overflow at node size to prevent scrolling
                     output.scrollable_overflow_rect.left = 0.0;
@@ -752,6 +840,121 @@ impl LayoutPassState<'_> {
             }
         }
         output
+    }
+
+    /// Lay out the caption boxes of a table (CSS 2.2 §17.4, §17.4.1): block boxes in the table
+    /// wrapper box, as wide as the table box (`table_width`), stacked in tree order above it
+    /// (`caption-side: top`) or below it (`caption-side: bottom`), their margins included.
+    /// Returns the height they take above (`start`) and below (`end`) the table box. Given the
+    /// table box's height, the captions get their final layout around it and the out-of-flow
+    /// candidates they surface are added to `oof_candidates`; otherwise they are only measured.
+    fn layout_table_captions(
+        &mut self,
+        context: &TableContext,
+        table_width: f32,
+        table_height: Option<f32>,
+        oof_candidates: &mut taffy::OofCandidates,
+    ) -> taffy::Line<f32> {
+        use style::values::computed::table::CaptionSide;
+
+        let run_mode = match table_height {
+            Some(_) => RunMode::PerformLayout,
+            None => RunMode::ComputeSize,
+        };
+        let mut space = taffy::Line {
+            start: 0.0,
+            end: 0.0,
+        };
+        // (caption, output, margin, padding, border, below the table box, offset on its side)
+        let mut laid_out = Vec::new();
+        for &caption_id in &context.captions {
+            let (below, margin, padding, border, width_is_auto) = {
+                let node = &self.nodes[caption_id];
+                let style = self.child_layout_style(node);
+                (
+                    node.primary_styles()
+                        .is_some_and(|style| style.clone_caption_side() == CaptionSide::Bottom),
+                    style
+                        .margin()
+                        .resolve_or_zero(Some(table_width), resolve_calc_value),
+                    style
+                        .padding()
+                        .resolve_or_zero(Some(table_width), resolve_calc_value),
+                    style
+                        .border()
+                        .resolve_or_zero(Some(table_width), resolve_calc_value),
+                    style.size().width.is_auto(),
+                )
+            };
+            let available_width = (table_width - margin.horizontal_axis_sum()).max(0.0);
+            let output = self.compute_child_layout(
+                taffy_node_id(caption_id),
+                taffy::LayoutInput {
+                    run_mode,
+                    sizing_mode: taffy::SizingMode::InherentSize,
+                    axis: taffy::RequestedAxis::Both,
+                    // An auto width fills the wrapper, as for any block box
+                    known_dimensions: taffy::Size {
+                        width: width_is_auto.then_some(available_width),
+                        height: None,
+                    },
+                    known_dimensions_are_definite: taffy::Size {
+                        width: true,
+                        height: true,
+                    },
+                    parent_size: taffy::Size {
+                        width: Some(table_width),
+                        height: None,
+                    },
+                    available_space: taffy::Size {
+                        width: AvailableSpace::Definite(available_width),
+                        height: AvailableSpace::MaxContent,
+                    },
+                    vertical_margins_are_collapsible: taffy::Line::FALSE,
+                },
+            );
+            let side = if below {
+                &mut space.end
+            } else {
+                &mut space.start
+            };
+            let offset = *side + margin.top;
+            *side += margin.vertical_axis_sum() + output.size.height;
+            if table_height.is_some() {
+                laid_out.push((caption_id, output, margin, padding, border, below, offset));
+            }
+        }
+
+        if let Some(table_height) = table_height {
+            let first_order = context.cells.len() + context.oof_children.len();
+            for (index, (caption_id, mut output, margin, padding, border, below, offset)) in
+                laid_out.into_iter().enumerate()
+            {
+                let location = taffy::Point {
+                    x: margin.left,
+                    y: match below {
+                        true => space.start + table_height + offset,
+                        false => offset,
+                    },
+                };
+                output.oof_candidates.translate(location);
+                oof_candidates.append(&mut output.oof_candidates);
+                self.set_unrounded_layout(
+                    taffy_node_id(caption_id),
+                    &taffy::Layout {
+                        order: (first_order + index) as u32,
+                        location,
+                        size: output.size,
+                        scrollable_overflow_rect: output.scrollable_overflow_rect,
+                        scrollbar_size: taffy::Size::ZERO,
+                        border,
+                        padding,
+                        margin,
+                    },
+                );
+            }
+        }
+        space
     }
 }
 

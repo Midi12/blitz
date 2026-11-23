@@ -1252,10 +1252,6 @@ impl BaseDocument {
             self.abort_signal.as_ref(),
         );
 
-        // Store data on element
-        let element = &mut self.nodes[node_id].element_data_mut().unwrap();
-        element.special_data = SpecialElementData::Stylesheet(stylesheet.clone());
-
         // TODO: Nodes could potentially get reused so ordering by node_id might be wrong.
         let insertion_point = self
             .nodes_to_stylesheet

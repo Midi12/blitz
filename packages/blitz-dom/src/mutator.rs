@@ -1131,6 +1131,13 @@ impl<'doc> DocumentMutator<'doc> {
                 doc.controls_to_form.retain(|_, form_id| *form_id != node_id);
             }
 
+            // The element's style sheet is kept in `nodes_to_stylesheet`, not in its
+            // special data, which box construction can replace (with a table's data)
+            if doc.nodes_to_stylesheet.contains_key(&node_id) {
+                self.eager_op_queue
+                    .push(SpecialOp::UnloadStylesheet(node_id));
+            }
+
             let node = &mut doc.nodes[node_id];
             let NodeData::Element(ref mut element) = node.data else {
                 return;
@@ -1146,9 +1153,7 @@ impl<'doc> DocumentMutator<'doc> {
                     self.eager_op_queue
                         .push(SpecialOp::UnloadCustomWidget(node_id));
                 }
-                SpecialElementData::Stylesheet(_) => self
-                    .eager_op_queue
-                    .push(SpecialOp::UnloadStylesheet(node_id)),
+                SpecialElementData::Stylesheet(_) => {}
                 SpecialElementData::Image(_) => {}
                 SpecialElementData::Canvas(_) => {
                     self.recompute_is_animating = true;
@@ -1253,18 +1258,10 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn unload_stylesheet(&mut self, node_id: NodeId) {
-        let node = &mut self.doc.nodes[node_id];
-        let Some(element) = node.element_data_mut() else {
-            unreachable!();
-        };
         // An icon link never holds a stylesheet, and a stylesheet link holds none
         // until its fetch has completed.
-        let stylesheet = match element.special_data.take() {
-            SpecialElementData::Stylesheet(stylesheet) => stylesheet,
-            other => {
-                element.special_data = other;
-                return;
-            }
+        let Some(stylesheet) = self.doc.nodes_to_stylesheet.remove(&node_id) else {
+            return;
         };
 
         let guard = self.doc.guard.read();
@@ -1273,7 +1270,6 @@ impl<'doc> DocumentMutator<'doc> {
             .stylist
             .force_stylesheet_origins_dirty(OriginSet::all());
 
-        self.doc.nodes_to_stylesheet.remove(&node_id);
         self.doc.stylesheet_generation += 1;
     }
 
@@ -1586,6 +1582,42 @@ mod test {
         drop(mutator);
         document.resolve(0.0);
         assert!(document.pending_images.is_empty());
+    }
+
+    #[test]
+    fn freed_style_element_laid_out_as_a_table_unloads_its_sheet() {
+        // Box construction replaces the special data of a `style` element shown as a
+        // table; its sheet must still go with it
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let style_element = mutator.create_element(
+            qual_name!("style", html),
+            vec![Attribute {
+                name: qual_name!("style"),
+                value: "display: table".to_string(),
+            }],
+        );
+        let css = mutator.create_text_node("p { color: red }");
+        mutator.append_children(style_element, &[css]);
+        mutator.append_children(html, &[style_element]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        document.resolve(0.0);
+        assert!(document.nodes[style_element].flags.is_table_root());
+        assert_eq!(document.author_stylesheets().count(), 1);
+
+        document.mutate().remove_and_drop_node(style_element);
+        document.resolve(0.0);
+        assert_eq!(document.author_stylesheets().count(), 0);
+        assert_eq!(
+            document
+                .stylist
+                .sheet_count(style::stylesheets::Origin::Author),
+            0
+        );
     }
 
     #[test]

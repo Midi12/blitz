@@ -358,7 +358,8 @@ pub enum SpecialElementData {
     /// A custom widget
     #[cfg(feature = "custom-widget")]
     CustomWidget(CustomWidgetData),
-    /// A stylesheet
+    /// A stylesheet. Not set by the document, which keeps the sheets of `<style>` and
+    /// `<link>` elements by node id, because box construction can replace this data.
     Stylesheet(DocumentStyleSheet),
     /// An \<img\> element's image data
     Image(Box<ImageData>),

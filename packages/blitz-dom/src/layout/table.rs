@@ -304,7 +304,10 @@ pub(crate) fn build_table_context(
         .collect();
     for order in 0..3 {
         for child_id in children.iter().copied() {
-            if row_group_order(doc, child_id) != order || captions.contains(&child_id) {
+            // Captions are tested on the node: a scan of `captions` per child would be
+            // quadratic in the number of the table's children
+            if row_group_order(doc, child_id) != order || is_table_caption(&doc.nodes[child_id])
+            {
                 continue;
             }
             collect_table_cells(
@@ -1016,5 +1019,48 @@ mod tests {
         assert_eq!(columns[999].node_id, first);
         assert_eq!(columns[1000].node_id, second);
         assert_ne!(columns[1001].node_id, second);
+    }
+
+    #[test]
+    fn captions_are_kept_out_of_the_grid() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let table = mutator.create_element(qual_name!("table", html), vec![]);
+        let first = mutator.create_element(qual_name!("caption", html), vec![]);
+        let positioned = mutator.create_element(
+            qual_name!("caption", html),
+            vec![Attribute {
+                name: qual_name!("style"),
+                value: "position: absolute".to_string(),
+            }],
+        );
+        let second = mutator.create_element(qual_name!("caption", html), vec![]);
+        let mut cells = Vec::new();
+        for caption in [first, positioned, second] {
+            let tr = mutator.create_element(qual_name!("tr", html), vec![]);
+            let td = mutator.create_element(qual_name!("td", html), vec![]);
+            mutator.append_children(tr, &[td]);
+            mutator.append_children(table, &[caption, tr]);
+            cells.push(td);
+        }
+        mutator.append_children(html, &[table]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+
+        document.resolve(0.0);
+        let context = table_context(&document, table);
+        // In-flow captions are laid out in the wrapper, in tree order; a positioned one is
+        // out of flow; neither takes a row of the grid
+        assert_eq!(context.captions, [first, second]);
+        assert_eq!(context.oof_children.len(), 1);
+        assert_eq!(context.oof_children[0].0, positioned);
+        assert_eq!(cell_positions(&document, table), [(0, 0), (1, 0), (2, 0)]);
+        let layout_children = document.nodes[table].layout_children.borrow().clone();
+        let mut expected = cells;
+        expected.extend([positioned, first, second]);
+        assert_eq!(layout_children.unwrap().as_slice(), expected.as_slice());
     }
 }

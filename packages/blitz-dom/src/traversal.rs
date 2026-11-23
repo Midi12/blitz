@@ -155,18 +155,20 @@ impl BaseDocument {
         mut cb: impl FnMut(NodeId, &mut BaseDocument),
     ) {
         cb(node_id, self);
-        iter_subtree_mut_inner(self, node_id, &mut cb);
-        fn iter_subtree_mut_inner(
-            doc: &mut BaseDocument,
-            node_id: NodeId,
-            cb: &mut impl FnMut(NodeId, &mut BaseDocument),
-        ) {
-            let children = std::mem::take(&mut doc.nodes[node_id].children);
-            for child_id in children.iter().cloned() {
-                cb(child_id, doc);
-                iter_subtree_mut_inner(doc, child_id, cb);
+        // Each frame holds a node's children, taken out of the node while its subtree
+        // is visited, and the position of the next child to visit. A stack rather than
+        // recursion, so that the depth of the tree does not bound the traversal.
+        let children = std::mem::take(&mut self.nodes[node_id].children);
+        let mut stack = vec![(node_id, children, 0usize)];
+        while let Some((_, children, next)) = stack.last_mut() {
+            if let Some(&child_id) = children.get(*next) {
+                *next += 1;
+                cb(child_id, self);
+                let children = std::mem::take(&mut self.nodes[child_id].children);
+                stack.push((child_id, children, 0));
+            } else if let Some((id, children, _)) = stack.pop() {
+                self.nodes[id].children = children;
             }
-            doc.nodes[node_id].children = children;
         }
     }
 

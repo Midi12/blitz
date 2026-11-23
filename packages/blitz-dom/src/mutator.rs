@@ -1654,6 +1654,32 @@ mod test {
     }
 
     #[test]
+    fn deep_trees_attach_and_drop_without_recursion() {
+        // Deeper than a test thread's stack allows for recursion by depth
+        const DEPTH: usize = 100_000;
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        mutator.append_children(root_id, &[html]);
+        // Built bottom up, so that each append is to a parentless node
+        let mut top = mutator.create_element(qual_name!("div", html), vec![]);
+        for _ in 1..DEPTH {
+            let parent = mutator.create_element(qual_name!("div", html), vec![]);
+            mutator.append_children(parent, &[top]);
+            top = parent;
+        }
+        let mut dropped = 0;
+        mutator.append_children(html, &[top]);
+        mutator.remove_and_drop_node_with(top, &mut |_| dropped += 1);
+        drop(mutator);
+
+        assert_eq!(dropped, DEPTH);
+        assert!(document.nodes[html].children.is_empty());
+    }
+
+    #[test]
     fn removed_controls_and_forms_leave_form_ownership() {
         let mut document = BaseDocument::new(DocumentConfig::default());
         let root_id = document.root_node().id;

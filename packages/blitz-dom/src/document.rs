@@ -1006,27 +1006,29 @@ impl BaseDocument {
         node_id: NodeId,
         on_drop: &mut dyn FnMut(NodeId),
     ) -> Option<Node> {
-        let mut node = self.remove_node_from_tree(node_id);
-        if let Some(node) = &mut node {
-            on_drop(node_id);
-            if let Some(before) = node.before() {
-                self.drop_node_ignoring_parent_with(before, on_drop);
-            }
-            if let Some(after) = node.after() {
-                self.drop_node_ignoring_parent_with(after, on_drop);
-            }
-
-            for &child in &node.children {
-                self.drop_node_ignoring_parent_with(child, on_drop);
-            }
+        // A stack rather than recursion, so that the depth of the tree does not bound
+        // what can be dropped. Nodes are dropped root first, in tree order.
+        let mut root = None;
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.remove_node_from_tree(id) else {
+                continue;
+            };
+            on_drop(id);
+            stack.extend(node.children.iter().rev());
+            stack.extend(node.after());
+            stack.extend(node.before());
 
             // Anonymous blocks live only in the slab, so deallocate the ones this
             // node owns rather than leaking them.
             for &anon_id in &node.anonymous_blocks {
                 self.deallocate_anonymous_block(anon_id);
             }
+            if id == node_id {
+                root = Some(node);
+            }
         }
-        node
+        root
     }
 
     /// Deallocate an anonymous block created in a previous construction

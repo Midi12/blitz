@@ -126,7 +126,7 @@ pub use style::stylist::RegisterCustomPropertyResult;
 pub type SelectorList = selectors::SelectorList<style::selector_parser::SelectorImpl>;
 pub use events::{EventDriver, EventHandler, NoopEventHandler};
 pub use html::{DummyHtmlParserProvider, HtmlParserProvider};
-pub use util::{Point, decode_font_bytes};
+pub use util::{Point, decode_font_bytes, warm_svg_fonts};
 
 /// Convenience builder for the one-font case: produces a [`FontContext`] with
 /// system-font discovery disabled and the supplied font registered as the

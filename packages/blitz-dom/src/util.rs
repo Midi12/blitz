@@ -50,6 +50,17 @@ pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
     Arc::new(db)
 });
 
+/// Load the system fonts that inline SVG text uses, if they are not loaded yet.
+///
+/// The font database is otherwise loaded by the first `<svg>` element that
+/// box construction meets, which scans the system's font directories in the
+/// middle of a layout. Call this at start-up to do that scan up front. It does
+/// nothing without the `svg` feature.
+pub fn warm_svg_fonts() {
+    #[cfg(feature = "svg")]
+    let _ = LazyLock::force(&FONT_DB);
+}
+
 /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
 /// flush from style to dedicated storage on the node.
 #[derive(Clone, Copy, Debug)]

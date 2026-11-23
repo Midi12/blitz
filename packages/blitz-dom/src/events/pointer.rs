@@ -865,8 +865,11 @@ pub(crate) fn handle_click(
         false
     };
 
-    // If nothing is matched then clear focus
-    if !matched {
+    // If nothing is matched then clear focus, unless the click landed in a focusable
+    // element: the press focused it (see `handle_pointerdown`), and it keeps the focus
+    let in_focusable = std::iter::successors(Some(target), |&id| doc.nodes[id].parent)
+        .any(|id| doc.nodes[id].is_focussable());
+    if !matched && !in_focusable {
         generate_focus_events(doc, &mut |doc| doc.clear_focus(), dispatch_event);
     }
 

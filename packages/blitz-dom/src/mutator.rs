@@ -971,14 +971,18 @@ impl<'doc> DocumentMutator<'doc> {
             self.doc.has_canvas = self.doc.compute_has_canvas();
         }
 
-        if let Some(id) = self.title_node {
-            let title = self.doc.nodes[id].text_content();
+        if let Some(node) = self.title_node.and_then(|id| self.doc.get_node(id)) {
+            let title = node.text_content();
             self.doc.shell_provider.set_window_title(title);
         }
 
-        // Add/Update inline stylesheets (<style> elements)
+        // Add/Update inline stylesheets (<style> elements). A style element has a sheet
+        // only while it is connected (HTML §4.2.6), and may have been freed since it was
+        // recorded.
         for id in self.style_nodes.drain() {
-            self.doc.process_style_element(id);
+            if self.doc.get_node(id).is_some_and(|node| node.flags.is_in_document()) {
+                self.doc.process_style_element(id);
+            }
         }
 
         for id in self.form_nodes.drain() {
@@ -1618,6 +1622,35 @@ mod test {
                 .sheet_count(style::stylesheets::Origin::Author),
             0
         );
+    }
+
+    #[test]
+    fn nodes_freed_before_the_flush_are_skipped() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root_id = document.root_node().id;
+
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        mutator.append_children(root_id, &[html]);
+        // Each is recorded for the flush, then freed before it
+        let style = mutator.create_element(qual_name!("style", html), vec![]);
+        let title = mutator.create_element(qual_name!("title", html), vec![]);
+        let input = mutator.create_element(qual_name!("input", html), vec![]);
+        mutator.append_children(html, &[style, title, input]);
+        for parent in [style, title] {
+            let text = mutator.create_text_node("p { color: red }");
+            mutator.append_children(parent, &[text]);
+        }
+        for node in [style, title, input] {
+            mutator.remove_and_drop_node(node);
+        }
+        // A style element out of the document has no sheet
+        let detached = mutator.create_element(qual_name!("style", html), vec![]);
+        let text = mutator.create_text_node("p { color: red }");
+        mutator.append_children(detached, &[text]);
+        drop(mutator);
+
+        assert_eq!(document.author_stylesheets().count(), 0);
     }
 
     #[test]

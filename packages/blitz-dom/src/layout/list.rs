@@ -16,7 +16,7 @@ pub(super) const BULLET_FONT_FAMILY: &str = "Bullet, monospace, sans-serif";
 
 pub(super) fn collect_list_item_children(
     doc: &mut BaseDocument,
-    index: &mut usize,
+    index: &mut i64,
     reversed: bool,
     node_id: NodeId,
 ) {
@@ -28,7 +28,7 @@ pub(super) fn collect_list_item_children(
         if let Some(layout) = node_list_item_child(doc, child, *index) {
             let node = &mut doc.nodes[child];
             node.element_data_mut().unwrap().list_item_data = Some(Box::new(layout));
-            *index += 1;
+            *index = index.saturating_add(1);
             collect_list_item_children(doc, index, reversed, child);
         } else {
             // Unset marker in case it was previously set
@@ -44,7 +44,7 @@ pub(super) fn collect_list_item_children(
 fn node_list_item_child(
     doc: &mut BaseDocument,
     child_id: NodeId,
-    index: usize,
+    index: i64,
 ) -> Option<ListItemLayout> {
     let node = &doc.nodes[child_id];
 
@@ -112,22 +112,33 @@ fn node_list_item_child(
     Some(ListItemLayout { marker, position })
 }
 
-// Determine the marker to render for a given list style type
-fn marker_for_style(list_style_type: ListStyleType, index: usize) -> Option<Marker> {
+// Determine the marker to render for a given list style type. `index` is the
+// item's ordinal value less one: zero or negative when the list starts at or
+// below zero.
+fn marker_for_style(list_style_type: ListStyleType, index: i64) -> Option<Marker> {
+    let decimal = || Marker::String(format!("{}. ", index.saturating_add(1)));
     Some(match list_style_type.0 {
         CounterStyle::None => return None,
         CounterStyle::Name(name) => match &*name.0 {
-            "lower-alpha" => {
-                let mut marker = String::new();
-                build_alpha_marker(index, &mut marker);
-                Marker::String(format!("{marker}. "))
-            }
-            "upper-alpha" => {
-                let mut marker = String::new();
-                build_alpha_marker(index, &mut marker);
-                Marker::String(format!("{}. ", marker.to_ascii_uppercase()))
-            }
-            "decimal" => Marker::String(format!("{}. ", index + 1)),
+            // The alphabetic styles have no representation below 1, where they fall
+            // back to decimal (CSS Counter Styles 3, sections 3.1.1 and 6.1)
+            "lower-alpha" => match usize::try_from(index) {
+                Ok(index) => {
+                    let mut marker = String::new();
+                    build_alpha_marker(index, &mut marker);
+                    Marker::String(format!("{marker}. "))
+                }
+                Err(_) => decimal(),
+            },
+            "upper-alpha" => match usize::try_from(index) {
+                Ok(index) => {
+                    let mut marker = String::new();
+                    build_alpha_marker(index, &mut marker);
+                    Marker::String(format!("{}. ", marker.to_ascii_uppercase()))
+                }
+                Err(_) => decimal(),
+            },
+            "decimal" => decimal(),
             "disc" => Marker::Char('•'),
             "circle" => Marker::Char('◦'),
             "square" => Marker::Char('▪'),
@@ -144,7 +155,7 @@ fn marker_for_style(list_style_type: ListStyleType, index: usize) -> Option<Mark
                 Marker::Char('•')
             } else {
                 // Cycle through symbols based on index: 1st, 2nd, 1st, 2nd, etc.
-                let idx = if len > 1 { index % len } else { 0 };
+                let idx = if len > 1 { index.rem_euclid(len as i64) as usize } else { 0 };
                 // Symbol is String or Ident variant, extract the string value
                 let sym = &syms[idx];
                 let marker_str = match sym {
@@ -233,5 +244,44 @@ mod tests {
         assert_eq!(result_2, Some(Marker::String("B. ".to_string())));
         assert_eq!(result_extended_1, Some(Marker::String("AA. ".to_string())));
         assert_eq!(result_extended_2, Some(Marker::String("AB. ".to_string())));
+    }
+
+    #[test]
+    fn test_marker_for_ordinals_below_one() {
+        let decimal = marker_for_style(list_style("decimal"), -3);
+        let alpha = marker_for_style(list_style("lower-alpha"), -1);
+        assert_eq!(decimal, Some(Marker::String("-2. ".to_string())));
+        assert_eq!(alpha, Some(Marker::String("0. ".to_string())));
+    }
+
+    #[test]
+    fn ordered_list_starting_at_zero() {
+        use crate::{BaseDocument, DocumentConfig, qual_name};
+
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let root_id = doc.root_node().id;
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let ol = mutator.create_element(
+            qual_name!("ol", html),
+            vec![crate::Attribute {
+                name: qual_name!("start"),
+                value: "0".to_string(),
+            }],
+        );
+        let first = mutator.create_element(qual_name!("li", html), vec![]);
+        let second = mutator.create_element(qual_name!("li", html), vec![]);
+        mutator.append_children(ol, &[first, second]);
+        mutator.append_children(html, &[ol]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        doc.resolve(0.0);
+
+        let marker = |id| {
+            let element = doc.nodes[id].element_data().unwrap();
+            element.list_item_data.as_ref().map(|data| data.marker.clone())
+        };
+        assert_eq!(marker(first), Some(Marker::String("0. ".to_string())));
+        assert_eq!(marker(second), Some(Marker::String("1. ".to_string())));
     }
 }

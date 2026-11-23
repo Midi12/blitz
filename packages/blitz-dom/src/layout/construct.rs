@@ -505,11 +505,12 @@ fn collect_layout_children_with_wrap(
             return;
         }
 
-        //Only ol tags have start and reversed attributes
+        // Only ol tags have start and reversed attributes. `start` is any integer,
+        // zero and negative values included (HTML §4.4.5)
         let (mut index, reversed) = if tag_name == "ol" {
             (
                 el.attr_parsed(local_name!("start"))
-                    .map(|start: usize| start - 1)
+                    .map(|start: i64| start.saturating_sub(1))
                     .unwrap_or(0),
                 el.attr_parsed(local_name!("reversed")).unwrap_or(false),
             )

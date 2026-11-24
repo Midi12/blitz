@@ -3,17 +3,48 @@
 //! An option's selectedness is its `ElementState::CHECKED` bit, which is also what `:checked`
 //! matches (Selectors 4 §13.3.1). A select shows its drop-down list while it has
 //! `ElementState::OPEN`, which is what `:open` matches. The list is drawn inside the document,
-//! below the select's box (`layout::compute_select_layout`); the selected option is painted in
-//! the box itself.
+//! below the select's box (`layout::compute_select_layout`), unless
+//! `DocumentConfig::embedder_select_lists` hands it to the embedder, which draws it from
+//! `BaseDocument::open_select_list`. The selected option is painted in the box itself.
 
 use blitz_traits::events::{BlitzInputEvent, DomEvent, DomEventData};
 use blitz_traits::node_id::NodeId;
 use keyboard_types::{Key, NamedKey};
 use markup5ever::local_name;
+use std::sync::LazyLock;
 use style_dom::ElementState;
 
 use crate::layout::damage::ALL_DAMAGE;
-use crate::{BaseDocument, Node};
+use crate::{BaseDocument, Node, UserAgentStylesheet};
+
+/// With `DocumentConfig::embedder_select_lists`, the rules after the default style sheet's that
+/// keep an open select rendered as a closed one: its options hidden in its box, and no stacking
+/// of its own.
+const EMBEDDER_SELECT_LISTS_CSS: &str = "
+select:open { position: static; z-index: auto; }
+select:open > option, select:open > optgroup > option { visibility: hidden; }
+";
+
+/// The user-agent sheet of `EMBEDDER_SELECT_LISTS_CSS`, parsed once.
+pub(crate) fn embedder_select_lists_sheet() -> UserAgentStylesheet {
+    static SHEET: LazyLock<UserAgentStylesheet> =
+        LazyLock::new(|| UserAgentStylesheet::parse(EMBEDDER_SELECT_LISTS_CSS));
+    SHEET.clone()
+}
+
+/// One option of the list an embedder draws for the open select
+/// (`BaseDocument::open_select_list`), in the select's list of options.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectListOption {
+    /// The `option` element. A `click` dispatched at it while the list is open picks it.
+    pub node: NodeId,
+    /// The option's label (HTML §4.10.10).
+    pub label: String,
+    /// Its selectedness. The selected option is also the highlighted one: the arrow keys
+    /// pick an option as they move.
+    pub selected: bool,
+    pub disabled: bool,
+}
 
 impl BaseDocument {
     /// The select element's list of options: its `option` children and the `option` children of
@@ -71,11 +102,24 @@ impl BaseDocument {
     /// An option's value: its `value` attribute, else its text with ASCII whitespace stripped and
     /// collapsed (HTML §4.10.10).
     pub fn option_value(&self, option_id: NodeId) -> String {
-        let node = &self.nodes[option_id];
-        if let Some(value) = node.attr(local_name!("value")) {
-            return value.to_string();
+        match self.nodes[option_id].attr(local_name!("value")) {
+            Some(value) => value.to_string(),
+            None => self.option_text(option_id),
         }
-        let text = node.text_content();
+    }
+
+    /// An option's label: its `label` attribute when not empty, else its text with ASCII
+    /// whitespace stripped and collapsed (HTML §4.10.10).
+    pub fn option_label(&self, option_id: NodeId) -> String {
+        match self.nodes[option_id].attr(local_name!("label")) {
+            Some(label) if !label.is_empty() => label.to_string(),
+            _ => self.option_text(option_id),
+        }
+    }
+
+    /// An option's text with ASCII whitespace stripped and collapsed (HTML §4.10.10).
+    fn option_text(&self, option_id: NodeId) -> String {
+        let text = self.nodes[option_id].text_content();
         let mut value = String::with_capacity(text.len());
         for word in text.split_ascii_whitespace() {
             if !value.is_empty() {
@@ -101,6 +145,27 @@ impl BaseDocument {
                     .element_data()
                     .is_some_and(|el| el.element_state.contains(ElementState::OPEN))
         })
+    }
+
+    /// With `DocumentConfig::embedder_select_lists`, the select whose drop-down list is open,
+    /// when it is in the document, and the options of its list in tree order: what the embedder
+    /// draws. `None` otherwise. The list closes as the document's own list does (a pick, Enter,
+    /// Escape, Space, the select losing focus) or when the embedder calls `set_select_open`.
+    pub fn open_select_list(&self) -> Option<(NodeId, Vec<SelectListOption>)> {
+        let select_id = self.open_select?;
+        if !self.select_is_open(select_id) || !self.nodes[select_id].flags.is_in_document() {
+            return None;
+        }
+        let options = self
+            .select_options(select_id)
+            .map(|id| SelectListOption {
+                node: id,
+                label: self.option_label(id),
+                selected: self.option_is_selected(id),
+                disabled: self.option_is_disabled(id),
+            })
+            .collect();
+        Some((select_id, options))
     }
 
     /// An option is disabled when it has a `disabled` attribute or is the child of an `optgroup`
@@ -225,9 +290,11 @@ impl BaseDocument {
         }
     }
 
-    /// Shows (`open`) or hides the select's drop-down list. The options move between the box and
-    /// the list, so the select is laid out again.
-    pub(crate) fn set_select_open(&mut self, select_id: NodeId, open: bool) {
+    /// Shows (`open`) or hides the select's drop-down list. When the document draws the list,
+    /// the options move between the box and the list, so the select is laid out again. With
+    /// `DocumentConfig::embedder_select_lists`, at most one select is open: opening one closes
+    /// any other.
+    pub fn set_select_open(&mut self, select_id: NodeId, open: bool) {
         if !self.nodes.contains_key(select_id)
             || !self.nodes[select_id]
                 .data
@@ -235,6 +302,16 @@ impl BaseDocument {
             || self.select_is_open(select_id) == open
         {
             return;
+        }
+        if self.embedder_select_lists {
+            if open {
+                if let Some(other) = self.open_select {
+                    self.set_select_open(other, false);
+                }
+                self.open_select = Some(select_id);
+            } else if self.open_select == Some(select_id) {
+                self.open_select = None;
+            }
         }
         self.snapshot_node_and(select_id, ElementState::OPEN, |node| {
             if let Some(el) = node.element_data_mut() {
@@ -326,10 +403,14 @@ impl BaseDocument {
 
 #[cfg(test)]
 mod test {
+    use blitz_traits::events::{DomEvent, DomEventData, EventState};
     use blitz_traits::node_id::NodeId;
-    use keyboard_types::{Key, NamedKey};
+    use keyboard_types::{Key, Modifiers, NamedKey};
+    use style_dom::ElementState;
 
-    use crate::{Attribute, BaseDocument, DocumentConfig, qual_name};
+    use crate::{
+        Attribute, BaseDocument, Document, DocumentConfig, EventDriver, EventHandler, qual_name,
+    };
 
     /// A select holding three options with the values "a", "b" and "c".
     fn select(doc: &mut BaseDocument) -> (NodeId, [NodeId; 3]) {
@@ -380,5 +461,78 @@ mod test {
             events.push(event)
         });
         assert_eq!(events.len(), 1, "no input event without a change");
+    }
+
+    /// Counts the `input` events it sees.
+    struct Inputs<'a>(&'a mut usize);
+
+    impl EventHandler for Inputs<'_> {
+        fn handle_event(
+            &mut self,
+            _chain: &[NodeId],
+            event: &mut DomEvent,
+            _doc: &mut dyn Document,
+            _event_state: &mut EventState,
+        ) {
+            if let DomEventData::Input(_) = event.data {
+                *self.0 += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn embedder_draws_the_open_list() {
+        let mut doc = BaseDocument::new(DocumentConfig {
+            embedder_select_lists: true,
+            ..Default::default()
+        });
+        let (select, [a, b, c]) = select(&mut doc);
+        let root = doc.root_node().id;
+        let mut mutator = doc.mutate();
+        mutator.set_attribute(b, qual_name!("label"), "Bee");
+        mutator.set_attribute(c, qual_name!("disabled"), "");
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        mutator.append_children(html, &[select]);
+        mutator.append_children(root, &[html]);
+        drop(mutator);
+        doc.resolve(0.0);
+        assert_eq!(doc.open_select_list(), None);
+        let closed_at = doc.nodes[c].final_layout().location;
+
+        doc.set_select_open(select, true);
+        doc.resolve(0.0);
+        assert!(doc.select_is_open(select));
+        // The select matches `:open`, but the document lays it out and paints it as closed
+        let state = doc.nodes[select].element_data().unwrap().element_state;
+        assert!(state.contains(ElementState::OPEN));
+        assert_eq!(doc.nodes[c].final_layout().location, closed_at);
+        assert_eq!(doc.resolved_style_value(c, "visibility"), "hidden");
+        let (open, options) = doc.open_select_list().unwrap();
+        assert_eq!(open, select);
+        let rows: Vec<_> = options
+            .iter()
+            .map(|o| (o.node, o.label.as_str(), o.selected, o.disabled))
+            .collect();
+        assert_eq!(
+            rows,
+            [(a, "", true, false), (b, "Bee", false, false), (c, "", false, true)]
+        );
+
+        // A click dispatched at an option picks it, fires `input` and closes the list
+        let mut inputs = 0;
+        let click = doc.nodes[b].synthetic_click_event_data(Modifiers::empty());
+        EventDriver::new(&mut doc, Inputs(&mut inputs))
+            .handle_dom_event(DomEvent::new(b, DomEventData::Click(click)));
+        assert_eq!(doc.selected_option(select), Some(b));
+        assert_eq!(inputs, 1);
+        assert_eq!(doc.open_select_list(), None);
+
+        // Escape closes it, and the embedder can close it too
+        doc.set_select_open(select, true);
+        doc.handle_select_key(select, &Key::Named(NamedKey::Escape), &mut |_| {});
+        assert!(!doc.select_is_open(select));
+        doc.set_select_open(select, true);
+        doc.set_select_open(select, false);
+        assert_eq!(doc.open_select_list(), None);
     }
 }

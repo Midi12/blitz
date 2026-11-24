@@ -68,6 +68,13 @@ pub struct DocumentConfig {
     /// How deeply this document is nested within other documents
     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
     pub subdocument_depth: usize,
+    /// Whether the embedder draws the option list of an open `select` element, for example in a
+    /// popup above the page, instead of the document drawing it below the select's box. When
+    /// set, an open select still matches `:open` but keeps the layout and painting of a closed
+    /// one; [`BaseDocument::open_select_list`](crate::BaseDocument::open_select_list) gives what
+    /// the embedder draws, and a `click` dispatched at one of its options picks that option as a
+    /// click on the document's own list does. Defaults to `false`.
+    pub embedder_select_lists: bool,
 }
 
 impl Default for DocumentConfig {
@@ -86,6 +93,7 @@ impl Default for DocumentConfig {
             incremental: None,
             abort_signal: None,
             subdocument_depth: 0,
+            embedder_select_lists: false,
         }
     }
 }

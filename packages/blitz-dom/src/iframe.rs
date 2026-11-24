@@ -72,6 +72,8 @@ impl BaseDocument {
             incremental: Some(self.incremental_layout),
             abort_signal: Some(abort_signal),
             subdocument_depth: self.subdocument_depth + 1,
+            // The embedder sees only the top document's open select
+            embedder_select_lists: false,
         }
     }
 

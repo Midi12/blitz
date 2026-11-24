@@ -767,8 +767,11 @@ impl LayoutPassState<'_> {
                 style
                     .border()
                     .resolve_or_zero(parent_width, resolve_calc_value),
-                node.element_data()
-                    .is_some_and(|el| el.element_state.contains(ElementState::OPEN)),
+                // An embedder that draws the list keeps the select laid out as closed
+                !self.embedder_select_lists
+                    && node
+                        .element_data()
+                        .is_some_and(|el| el.element_state.contains(ElementState::OPEN)),
             )
         };
         let content_width = (output.size.width

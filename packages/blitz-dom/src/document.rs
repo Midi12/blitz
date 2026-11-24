@@ -251,6 +251,11 @@ pub struct BaseDocument {
     /// How deeply this document is nested within other documents
     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
     pub(crate) subdocument_depth: usize,
+    /// `DocumentConfig::embedder_select_lists`.
+    pub(crate) embedder_select_lists: bool,
+    /// With `embedder_select_lists`, the select whose option list the embedder shows (it also
+    /// has `ElementState::OPEN`).
+    pub(crate) open_select: Option<NodeId>,
 
     // Events
     pub(crate) tx: Sender<DocumentEvent>,
@@ -491,6 +496,8 @@ impl BaseDocument {
             style_threading: config.style_threading,
             incremental_layout: config.incremental.unwrap_or(true),
             subdocument_depth: config.subdocument_depth,
+            embedder_select_lists: config.embedder_select_lists,
+            open_select: None,
             devtool_settings: DevtoolSettings::default(),
             url: base_url,
             nodes_to_stylesheet: BTreeMap::new(),
@@ -548,6 +555,9 @@ impl BaseDocument {
 
         for sheet in config.ua_stylesheets {
             doc.add_user_agent_stylesheet(sheet);
+        }
+        if doc.embedder_select_lists {
+            doc.add_user_agent_stylesheet(crate::select::embedder_select_lists_sheet());
         }
 
         // Stylo data on the root node container is needed to render the node

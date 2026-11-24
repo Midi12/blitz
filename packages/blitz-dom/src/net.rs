@@ -19,15 +19,19 @@ use style::{
     values::{CssUrl, SourceLocation},
 };
 
-use blitz_traits::net::{AbortSignal, Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::net::{AbortSignal, Bytes, NetHandler, NetProvider, Request, RequestDestination};
 use blitz_traits::shell::ShellProvider;
 
 use url::Url;
 
 use crate::{document::DocumentEvent, util::ImageType};
 
-pub(crate) fn stamped_request(url: Url, signal: Option<&AbortSignal>) -> Request {
-    let mut req = Request::get(url);
+pub(crate) fn stamped_request(
+    url: Url,
+    destination: RequestDestination,
+    signal: Option<&AbortSignal>,
+) -> Request {
+    let mut req = Request::get(url).destination(destination);
     if let Some(sig) = signal {
         req = req.signal(sig.clone());
     }
@@ -230,7 +234,11 @@ impl ServoStylesheetLoader for StylesheetLoader {
         let import = ServoArc::new(lock.wrap(import));
         self.net_provider.fetch(
             self.doc_id,
-            stamped_request(url.as_ref().clone(), self.abort_signal.as_ref()),
+            stamped_request(
+                url.as_ref().clone(),
+                RequestDestination::Style,
+                self.abort_signal.as_ref(),
+            ),
             ResourceHandler::boxed(
                 self.tx.clone(),
                 self.doc_id,
@@ -511,7 +519,7 @@ pub(crate) fn fetch_font_face_rules<'a>(
             if let Some((url, format)) = preferred_source {
                 network_provider.fetch(
                     doc_id,
-                    stamped_request(url, abort_signal),
+                    stamped_request(url, RequestDestination::Font, abort_signal),
                     ResourceHandler::boxed(
                         tx.clone(),
                         doc_id,
@@ -662,6 +670,85 @@ mod tests {
             1,
             "only the valid import is fetched"
         );
+    }
+
+    /// Records the path and destination of each request it is asked to make, and makes none.
+    #[derive(Default)]
+    struct RecordingNetProvider(std::sync::Mutex<Vec<(String, RequestDestination)>>);
+    impl NetProvider for RecordingNetProvider {
+        fn fetch(&self, _doc_id: usize, request: Request, _handler: Box<dyn NetHandler>) {
+            let path = request.url.path().to_string();
+            self.0.lock().unwrap().push((path, request.destination));
+        }
+    }
+
+    #[test]
+    fn requests_carry_their_destination() {
+        use crate::{Attribute, BaseDocument, DocumentConfig, qual_name};
+
+        let net = Arc::new(RecordingNetProvider::default());
+        let mut doc = BaseDocument::new(DocumentConfig {
+            base_url: Some("https://example.com/".to_string()),
+            net_provider: Some(net.clone() as _),
+            ..Default::default()
+        });
+        let attr = |name, value: &str| Attribute {
+            name,
+            value: value.to_string(),
+        };
+        let root = doc.root_node().id;
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let link = mutator.create_element(
+            qual_name!("link", html),
+            vec![
+                attr(qual_name!("rel"), "stylesheet"),
+                attr(qual_name!("href"), "a.css"),
+            ],
+        );
+        let img = mutator.create_element(
+            qual_name!("img", html),
+            vec![attr(qual_name!("src"), "b.png")],
+        );
+        mutator.append_children(html, &[link, img]);
+        mutator.append_children(root, &[html]);
+        drop(mutator);
+
+        // An `@import`, from the loader of a style sheet
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let loader = StylesheetLoader {
+            tx,
+            doc_id: 0,
+            net_provider: net.clone(),
+            shell_provider: Arc::new(blitz_traits::shell::DummyShellProvider),
+            abort_signal: None,
+            import_depth: 0,
+        };
+        let lock = SharedRwLock::new();
+        let base_url = Url::parse("https://example.com/style.css").unwrap();
+        Stylesheet::from_str(
+            r#"@import "c.css";"#,
+            UrlExtraData(ServoArc::new(base_url)),
+            Origin::Author,
+            ServoArc::new(lock.wrap(MediaList::empty())),
+            lock.clone(),
+            Some(&loader),
+            None,
+            QuirksMode::NoQuirks,
+            AllowImportRules::Yes,
+        );
+
+        let requests = net.0.lock().unwrap();
+        for request in [
+            ("/a.css", RequestDestination::Style),
+            ("/b.png", RequestDestination::Image),
+            ("/c.css", RequestDestination::Style),
+        ] {
+            assert!(
+                requests.contains(&(request.0.to_string(), request.1)),
+                "{request:?} in {requests:?}"
+            );
+        }
     }
 
     #[test]

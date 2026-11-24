@@ -1,3 +1,4 @@
+use blitz_traits::net::RequestDestination;
 use blitz_traits::node_id::NodeId;
 #[cfg(feature = "svg")]
 use markup5ever::local_name;
@@ -610,6 +611,7 @@ impl BaseDocument {
                             doc_id,
                             crate::net::stamped_request(
                                 (**new_url).clone(),
+                                RequestDestination::Image,
                                 self.abort_signal.as_ref(),
                             ),
                             ResourceHandler::boxed(

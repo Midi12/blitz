@@ -57,6 +57,9 @@ pub struct Request {
     pub headers: HeaderMap,
     pub body: Body,
     pub signal: Option<AbortSignal>,
+    /// What the response will be used as, so that a net provider can apply a policy per kind
+    /// of resource. [`RequestDestination::Empty`] unless the document sets it.
+    pub destination: RequestDestination,
 }
 impl Request {
     /// A get request to the specified Url and an empty body
@@ -68,6 +71,7 @@ impl Request {
             headers: HeaderMap::new(),
             body: Body::Empty,
             signal: None,
+            destination: RequestDestination::Empty,
         }
     }
 
@@ -75,6 +79,31 @@ impl Request {
         self.signal = Some(signal);
         self
     }
+
+    pub fn destination(mut self, destination: RequestDestination) -> Self {
+        self.destination = destination;
+        self
+    }
+}
+
+/// A request's destination (<https://fetch.spec.whatwg.org/#concept-request-destination>):
+/// what its response will be used as. The destinations a document makes requests for.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum RequestDestination {
+    /// The empty string: no particular use.
+    #[default]
+    Empty,
+    /// A document to navigate to.
+    Document,
+    /// An `@font-face` source.
+    Font,
+    /// The document of an `<iframe>`.
+    Iframe,
+    /// An `<img>`'s image, or a `background-image` or `mask-image` layer.
+    Image,
+    /// A `<link rel="stylesheet">` or an `@import`.
+    Style,
 }
 
 #[derive(Debug, Clone)]

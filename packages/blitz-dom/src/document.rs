@@ -22,7 +22,7 @@ use crate::{
 use blitz_traits::devtools::DevtoolSettings;
 use blitz_traits::events::{DomEvent, HitResult, UiEvent};
 use blitz_traits::navigation::{DummyNavigationProvider, NavigationProvider};
-use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request};
+use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request, RequestDestination};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::shell::{DummyShellProvider, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
@@ -621,8 +621,8 @@ impl BaseDocument {
 
     /// Wrapper around [`crate::net::stamped_request`]. Use the free function
     /// when `&self` would conflict with a held `&mut` borrow on a field.
-    pub(crate) fn build_request(&self, url: url::Url) -> Request {
-        crate::net::stamped_request(url, self.abort_signal.as_ref())
+    pub(crate) fn build_request(&self, url: url::Url, destination: RequestDestination) -> Request {
+        crate::net::stamped_request(url, destination, self.abort_signal.as_ref())
     }
 
     pub fn favicon_url(&self) -> Option<String> {
@@ -1156,7 +1156,7 @@ impl BaseDocument {
                     {
                         self.net_provider.fetch(
                             self.id(),
-                            self.build_request(resolved_href.clone()),
+                            self.build_request(resolved_href.clone(), RequestDestination::Style),
                             ResourceHandler::boxed(
                                 self.tx.clone(),
                                 self.id,

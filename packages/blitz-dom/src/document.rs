@@ -1472,6 +1472,44 @@ impl BaseDocument {
         }
     }
 
+    /// Drops the cached images that no node of the document holds any more (as an `<img>`'s
+    /// image or as a `background-image` or `mask-image` layer), so that their memory is freed:
+    /// the cache otherwise keeps every image loaded for the life of the document. A dropped URL
+    /// is fetched again if a node asks for it later. Returns each dropped URL with the size in
+    /// bytes of its decoded pixels (0 for an SVG image). Detached nodes that are not freed still
+    /// hold their images.
+    pub fn drop_unreferenced_images(&mut self) -> Vec<(String, usize)> {
+        if self.image_cache.is_empty() {
+            return Vec::new();
+        }
+        let mut held = HashSet::new();
+        for (_, node) in self.nodes.iter() {
+            let Some(element) = node.element_data() else {
+                continue;
+            };
+            if let SpecialElementData::Image(image) = &element.special_data {
+                held.extend(image_address(image));
+            }
+            let layers = element.background_images.iter().chain(&element.mask_images);
+            for layer in layers.flatten() {
+                held.extend(image_address(&layer.image));
+            }
+        }
+        let mut dropped = Vec::new();
+        self.image_cache.retain(|url, image| {
+            let keep = image_address(image).is_none_or(|address| held.contains(&address));
+            if !keep {
+                let bytes = match image {
+                    ImageData::Raster(raster) => raster.data.len(),
+                    _ => 0,
+                };
+                dropped.push((url.clone(), bytes));
+            }
+            keep
+        });
+        dropped
+    }
+
     /// Snapshot the node's pre-mutation state (element state and attributes) ahead of
     /// an attribute mutation, so that the next style traversal can diff selector matches
     /// then-vs-now and invalidate the affected elements.
@@ -2898,6 +2936,58 @@ impl AsRef<BaseDocument> for BaseDocument {
 impl AsMut<BaseDocument> for BaseDocument {
     fn as_mut(&mut self) -> &mut BaseDocument {
         self
+    }
+}
+
+/// The address of an image's decoded data, which its clones share: what tells whether a node
+/// holds a cached image. `None` for no image.
+fn image_address(image: &ImageData) -> Option<usize> {
+    match image {
+        ImageData::Raster(raster) => Some(raster.data.data().as_ptr() as usize),
+        #[cfg(feature = "svg")]
+        ImageData::Svg(svg) => Some(Arc::as_ptr(&svg.tree) as usize),
+        ImageData::None => None,
+    }
+}
+
+#[cfg(test)]
+mod image_cache_tests {
+    use super::*;
+    use crate::qual_name;
+
+    /// `url` loaded as a 2 by 1 raster image, as a net provider answers it.
+    fn load(doc: &mut BaseDocument, url: &str) {
+        doc.load_resource(ResourceLoadResponse {
+            request_id: 0,
+            node_id: None,
+            resolved_url: Some(url.to_string()),
+            result: Ok(Resource::Image(ImageType::Image, 2, 1, Arc::new(vec![0; 8]))),
+        });
+    }
+
+    #[test]
+    fn images_no_node_holds_are_dropped() {
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let (a, b) = ("https://example.com/a.png", "https://example.com/b.png");
+        load(&mut doc, a);
+        load(&mut doc, b);
+        let root = doc.root_node().id;
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html", html), vec![]);
+        let img = mutator.create_element(qual_name!("img", html), vec![]);
+        mutator.append_children(html, &[img]);
+        mutator.append_children(root, &[html]);
+        mutator.set_attribute(img, qual_name!("src"), a);
+        drop(mutator);
+
+        assert_eq!(doc.drop_unreferenced_images(), [(b.to_string(), 8)]);
+        assert!(doc.image_cache.contains_key(a));
+
+        let mut mutator = doc.mutate();
+        mutator.remove_and_drop_node(img);
+        drop(mutator);
+        assert_eq!(doc.drop_unreferenced_images(), [(a.to_string(), 8)]);
+        assert!(doc.image_cache.is_empty());
     }
 }
 
